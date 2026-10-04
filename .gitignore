@@ -1,0 +1,18 @@
+# Build
+/build*/
+/out/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.lib
+*.tlog
+*.recipe
+*.lastbuildstate
+
+# IDE & OS
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db

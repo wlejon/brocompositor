@@ -3,8 +3,12 @@ set(TESTS
     test_layout
     test_workspace
     test_appbar
-    test_window_win
+    test_linux_compositor
 )
+
+if(WIN32)
+    list(APPEND TESTS test_window_win)
+endif()
 
 foreach(test_name IN LISTS TESTS)
     add_executable(${test_name} "${test_name}.cpp")
@@ -13,6 +17,7 @@ foreach(test_name IN LISTS TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/../include"
         "${CMAKE_CURRENT_SOURCE_DIR}/../src"
         "${CMAKE_CURRENT_SOURCE_DIR}/../src/win"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/linux"
         "${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME ${test_name} COMMAND ${test_name})

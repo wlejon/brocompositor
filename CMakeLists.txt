@@ -46,6 +46,12 @@ set(BROCOMPOSITOR_SOURCES
     src/layout_engine.cpp
     src/workspace_manager.cpp
     src/appbar_manager.cpp
+    src/linux/wl_backend.cpp
+    src/linux/wl_seat.cpp
+    src/linux/wl_xdg_shell.cpp
+    src/linux/wl_layer_shell.cpp
+    src/linux/wl_dmabuf_vulkan.cpp
+    src/linux/wl_compositor.cpp
 )
 
 if(WIN32)
@@ -69,6 +75,7 @@ target_include_directories(brocompositor
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/linux
 )
 
 if(WIN32)

@@ -1,24 +1,54 @@
-set(TESTS
-    test_smoke
-    test_layout
-    test_workspace
-    test_appbar
-    test_linux_compositor
-)
+function(bc_test name)
+    cmake_parse_arguments(T "" "" "SOURCES;LIBS" ${ARGN})
+    add_executable(${name} ${T_SOURCES})
+    target_link_libraries(${name} PRIVATE ${T_LIBS})
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    brocompositor_warnings(${name})
+    if(WIN32)
+        target_compile_definitions(${name} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    endif()
+    add_test(NAME ${name} COMMAND ${name})
+    set_tests_properties(${name} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endfunction()
+
+# Portable core: runs everywhere.
+bc_test(test_layout SOURCES core/test_layout.cpp LIBS brocompositor_core)
+bc_test(test_window_manager SOURCES core/test_window_manager.cpp LIBS brocompositor_core)
+bc_test(test_event_queue SOURCES core/test_event_queue.cpp LIBS brocompositor_core)
 
 if(WIN32)
-    list(APPEND TESTS test_window_win)
-endif()
+    # A separate process that owns the windows the backend tests manage, so
+    # every test exercises the real cross-process (foreign window) paths and
+    # never touches a window it did not create.
+    add_executable(bc_test_app win/test_app.cpp)
+    target_compile_definitions(bc_test_app PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(bc_test_app PRIVATE user32 gdi32 dwmapi)
+    brocompositor_warnings(bc_test_app)
 
-foreach(test_name IN LISTS TESTS)
-    add_executable(${test_name} "${test_name}.cpp")
-    target_link_libraries(${test_name} PRIVATE brocompositor)
-    target_include_directories(${test_name} PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src/win"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src/linux"
-        "${CMAKE_CURRENT_SOURCE_DIR}"
-    )
-    add_test(NAME ${test_name} COMMAND ${test_name})
-endforeach()
+    add_library(bc_win_harness STATIC win/harness.cpp)
+    target_include_directories(bc_win_harness PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(bc_win_harness PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE
+        BC_TEST_APP="$<TARGET_FILE:bc_test_app>")
+    target_link_libraries(bc_win_harness PUBLIC brocompositor_win user32 dwmapi)
+    add_dependencies(bc_win_harness bc_test_app)
+    brocompositor_warnings(bc_win_harness)
+
+    foreach(t lifecycle ops focus appbar integration capture)
+        if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/win/test_win_${t}.cpp)
+            continue()
+        endif()
+        bc_test(test_win_${t} SOURCES win/test_win_${t}.cpp LIBS bc_win_harness)
+        # The backend tests drive real desktop state (foreground, work
+        # area); run them one at a time.
+        set_tests_properties(test_win_${t} PROPERTIES RUN_SERIAL TRUE)
+    endforeach()
+    if(TARGET test_win_capture)
+        target_link_libraries(test_win_capture PRIVATE d3d11 dxgi)
+    endif()
+
+    if(TARGET brocompositor_vulkan)
+        bc_test(test_vulkan_import SOURCES win/test_vulkan_import.cpp win/vk_context.cpp
+            LIBS bc_win_harness brocompositor_vulkan)
+        set_tests_properties(test_vulkan_import PROPERTIES RUN_SERIAL TRUE)
+    endif()
+endif()

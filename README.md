@@ -1,82 +1,106 @@
 # brocompositor
 
-**Cross-Platform Window Management and Display Compositing Substrate for Bro (`bro.wm` / `bro.compositor`).**
+Window-management and compositing substrate for a desktop environment built on
+the bro runtime. A standalone C++20 library: no dependency on bro or bronze, no
+JS binding, its own CMake and ctest.
 
-`brocompositor` manages window placement, virtual workspaces, edge appbar docking for desktop panels/docks, tiling/floating layout algorithms (BSP, Master-Stack, Columns, Grid), and zero-copy GPU texture ingestion into Bro's Vulkan presenter.
+## Structure
 
----
+The library is honest about the two roles it plays:
 
-## Features
+| Platform | Role | What the backend does |
+|----------|------|-----------------------|
+| Windows  | **shell** over DWM | manages top-level windows owned by other processes |
+| Linux (next) | **display server** (Wayland) | owns clients, surfaces and outputs; the host renders the outputs |
 
-- **Tiling & Layout Engine**:
-  - Binary Space Partitioning (BSP) tree-based window splitting.
-  - Master-Stack dynamic tiling (customizable master ratio and window counts).
-  - Columns and Grid layouts.
-  - Floating mode with magnetic snapping against display work areas and adjacent window boundaries.
-  - Configurable inner and outer gaps.
-- **Virtual Desktops & Workspaces**:
-  - Multi-monitor workspace management.
-  - Dynamic workspace switching with OS window cloaking/visibility transitions.
-  - Window migration and focus retention across workspaces.
-  - Window pinning support across all virtual desktops.
-- **Edge AppBar Docking**:
-  - Reserved Top, Bottom, Left, and Right desktop edges with pixel thickness and exclusive margins.
-  - System work area adjustment (`SHAppBarMessage` / `SPI_SETWORKAREA`) ensuring tiled/maximized windows never overlap docks or taskbars.
-  - Auto-hide support.
-- **Windows Backend (Win32 / DWM / WGC)**:
-  - Event hook manager (`SetWinEventHook`) running on a dedicated message thread for real-time window tracking (`EVENT_OBJECT_CREATE`, `EVENT_OBJECT_DESTROY`, `EVENT_SYSTEM_FOREGROUND`, `EVENT_SYSTEM_MOVESIZEEND`, `EVENT_SYSTEM_MINIMIZESTART`, `EVENT_SYSTEM_MINIMIZEEND`).
-  - Window management and DWM styling (`DwmSetWindowAttribute` for immersive dark mode titlebars, window corner rounding preferences, and cloaking).
-  - Windows Graphics Capture (WGC) + DXGI NT Shared Handle pipeline for zero-copy Vulkan ingestion (`VK_KHR_external_memory_win32`).
-
----
-
-## Directory Structure
+Both roles share one portable core and one surface contract; nothing else is
+pretended to be common.
 
 ```
-brocompositor/
-├── CMakeLists.txt
-├── README.md
-├── include/
-│   └── brocompositor/
-│       ├── appbar.h           # Edge docking & work area interface
-│       ├── compositor.h       # Master ICompositor facade
-│       ├── export.h           # Dynamic/static export macros
-│       ├── layout.h           # Layout engine interface & config
-│       ├── types.h            # Geometric types, states, enums
-│       ├── version.h          # Semantic versioning API
-│       ├── window.h           # WindowInfo abstractions
-│       └── workspace.h        # Virtual desktop abstractions
-├── src/
-│   ├── appbar_manager.h/cpp   # AppBar & work area computation
-│   ├── bsp_tree.h/cpp         # BSP tree layout implementation
-│   ├── layout_engine.h/cpp    # Master-Stack, Columns, Grid, Snapping
-│   ├── version.cpp            # Version implementation
-│   ├── workspace_manager.h/cpp# Multi-monitor workspace state
-│   └── win/
-│       ├── win_appbar.h/cpp   # Win32 SHAppBarMessage integration
-│       ├── win_capture.h/cpp  # D3D11/DXGI shared NT handle pipeline
-│       ├── win_compositor.h/cpp# Windows concrete ICompositor
-│       ├── win_hook_manager.h/cpp # WinEventHook background loop
-│       ├── win_virtual_desktops.h/cpp # Window cloaking / switching
-│       └── win_window_ops.h/cpp   # SetWindowPos, ShowWindow, DWM
-└── tests/
-    ├── CMakeLists.txt
-    ├── test_appbar.cpp
-    ├── test_common.h
-    ├── test_layout.cpp
-    ├── test_smoke.cpp
-    ├── test_window_win.cpp
-    └── test_workspace.cpp
+include/brocompositor/
+  geometry.h        Rect/Point/Size/Margins/Edge/Direction
+  events.h          facts: WindowAdded/Removed/Changed, FocusChanged, MoveSize*, MonitorsChanged, ReservationChanged
+  commands.h        decisions: PlaceWindow, SetWindowVisible, FocusWindow, CloseWindow
+  event_queue.h     MPSC queue the host drains on its own thread
+  layout.h          pure layouts: BSP (dwindle), master-stack, columns, grid; snapping
+  window_manager.h  the policy core (monitors, workspaces, focus history, tiling)
+  surface.h         SurfaceSource: shareable GPU images + sync, leased per frame
+  win/shell_backend.h   Windows shell backend
+  win/capture.h         Windows.Graphics.Capture -> SurfaceSource
+  vulkan/importer.h     optional Vulkan import of SharedImage / SharedTimeline
 ```
 
----
+Targets: `brocompositor::core` (portable, pure), `brocompositor::win` (WIN32),
+`brocompositor::vulkan` (optional), `brocompositor::brocompositor` (all
+available).
 
-## Building & Testing
+### Host loop
 
-### Windows (Visual Studio 2022 / Ninja)
-
-```sh
-cmake -B build -S .
-cmake --build build --config Debug
-ctest --test-dir build -C Debug --output-on-failure
+```cpp
+auto shell = win::ShellBackend::create(cfg, &err);   // starts the shell thread
+WindowManager wm(wm_cfg);                            // pure, single-threaded
+// on the host thread, whenever the queue's wake hook fires:
+for (auto& e : shell->events().drain())
+    shell->execute(wm.handle(e));
+// host actions return commands too:
+shell->execute(wm.activate_workspace(ws));
 ```
+
+The core never moves a window unless the host opts a workspace into a tiling
+layout (`LayoutMode::Floating` is the default).
+
+### Threading
+
+* Backends push value snapshots into an `EventQueue` from their own threads;
+  the host drains it on its thread. No callback runs host code except the
+  queue's optional wake hook (and `WindowCapture::set_frame_callback`, which
+  fires on a WGC thread-pool thread).
+* Windows: one shell thread per `ShellBackend` owns the WinEvent hooks, the
+  listener window (display / work-area broadcasts) and the appbar windows.
+  Window operations run on the caller's thread in a per-monitor-v2 DPI scope.
+
+### Surface contract
+
+A `SurfaceSource` exposes a small set of OS-native shareable images
+(`SharedImage`, imported once per `id`) and a sync primitive. Per frame the
+host leases the newest frame (`acquire`), GPU-waits its sync, samples, and
+`release`s once its GPU work completed. Leased images are never overwritten.
+
+* Windows: D3D11 textures with `SHARED_NTHANDLE`, ordered by a shared
+  `ID3D11Fence` imported in Vulkan as a timeline semaphore
+  (`VK_KHR_external_memory_win32`, `VK_KHR_external_semaphore_win32`, Vulkan
+  1.2 timeline semaphores). The producer device is created on the host's
+  adapter by LUID.
+* Linux (next): dmabuf planes + modifier (or shm) with damage, a per-frame
+  sync_file, and `presented()` driving frame callbacks.
+
+## Building
+
+Windows (Visual Studio generator, one build dir, config at build time):
+
+```bash
+cmake -B build -DCMAKE_PREFIX_PATH=D:/vcpkg/installed/x64-windows   # Vulkan headers for the importer
+cmake --build build --config Release
+ctest --test-dir build -C Release
+```
+
+The Vulkan importer builds when Vulkan headers are found (`VULKAN_SDK` or
+`CMAKE_PREFIX_PATH`); it never links a loader. On Linux only the core builds:
+
+```bash
+cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-release
+ctest --test-dir build-release
+```
+
+## Tests
+
+Real ctests (failures counted in every configuration, no `assert`). The
+Windows tests drive the real OS against windows owned by `bc_test_app`, a
+child process they spawn, with the backend's `process_filter` confined to it:
+the user's windows are never moved, hidden or closed, edge reservations are
+removed on every exit path (release, destructor, console control handler,
+unhandled exception) and the work area of every monitor is compared with its
+original at the end, and the user's foreground window is restored.
+`test_win_focus` skips (exit 77) while the input desktop is not the user's
+Default desktop (screen saver, lock screen), since nothing can take the
+foreground then.

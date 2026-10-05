@@ -104,7 +104,17 @@ void run_app(Host& host, MonitorId mon, const App& app) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         size_t n = commits_of(host, root) - before;
         std::printf("   %zu commits in 0.5 s\n", n);
-        CHECK(n >= 15 && n <= 40);
+        // Paced by frame callbacks at the output's 60 Hz: never unthrottled
+        // (40), and still animating. The floor is half the rate, except in an
+        // unoptimized build (Debug, coverage), where the test host's CPU
+        // compositor can fall well below 60 Hz and the frames only have to
+        // keep coming.
+#if defined(__OPTIMIZE__)
+        const size_t min_commits = 15;
+#else
+        const size_t min_commits = 5;
+#endif
+        CHECK(n >= min_commits && n <= 40);
     }
 
     CHECK(host.server().execute(Command{CloseWindow{w}}));

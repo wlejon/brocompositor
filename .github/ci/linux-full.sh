@@ -61,10 +61,12 @@ sed -n '/Testing: test_wl_vulkan/,/<end of output>/p' build/Testing/Temporary/La
 
 # test_wl_drm takes DRM master on the vkms card the host loaded. There is no
 # seat in a container (no logind, no VT for seatd to bind), so it runs as root
-# with libseat's noop backend, which opens the card directly.
+# with libseat's noop backend, which opens the card directly; and no input
+# devices, which libinput refuses unless told that is expected.
 echo
 if [ -n "${BROCOMPOSITOR_DRM_DEVICE:-}" ] && [ -e "$BROCOMPOSITOR_DRM_DEVICE" ]; then
-    LIBSEAT_BACKEND=noop /w/brocompositor/.github/ci/ctest.sh --test-dir build -R test_wl_drm
+    LIBSEAT_BACKEND=noop WLR_LIBINPUT_NO_DEVICES=1 \
+        /w/brocompositor/.github/ci/ctest.sh --test-dir build -R test_wl_drm
 else
     env -u BROCOMPOSITOR_DRM_DEVICE /w/brocompositor/.github/ci/ctest.sh --test-dir build -R test_wl_drm
 fi

@@ -4,6 +4,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 
+#include "brocompositor/mac/shell_backend.h"  // query_permissions
 #include "mac/metal_impl.h"
 #include "mac/system.h"
 
@@ -95,6 +96,7 @@ struct WindowCapture::Impl {
     SCStream* stream API_AVAILABLE(macos(12.3)) = nil;
     BCStreamOutput* output API_AVAILABLE(macos(12.3)) = nil;
     dispatch_queue_t queue = nil;
+    mutable std::atomic<int64_t> last_exists_check{0};  // steady ms
 };
 
 namespace {
@@ -124,10 +126,15 @@ std::unique_ptr<WindowCapture> WindowCapture::start(std::shared_ptr<MetalDevice>
         return fail("ScreenCaptureKit needs macOS 12.3");
     }
     if (!device) return fail("no Metal device");
-    // Never prompt: CGRequestScreenCaptureAccess / SCShareableContent would.
-    if (!CGPreflightScreenCaptureAccess())
-        return fail("Screen Recording permission not granted (System Settings > Privacy & Security > "
-                    "Screen & System Audio Recording)");
+    // Never prompt: CGRequestScreenCaptureAccess / SCShareableContent may
+    // (for an application; tccd never prompts for a platform binary such as
+    // sshd-keygen-wrapper and denies instead). Both read the same TCC grant
+    // (kTCCServiceScreenCapture); tccd logs the same subject for each.
+    auto refused = [&] {
+        return fail("Screen Recording permission not granted to " + query_permissions().responsible_path +
+                    " (System Settings > Privacy & Security > Screen & System Audio Recording)");
+    };
+    if (!CGPreflightScreenCaptureAccess()) return refused();
     auto impl = std::make_unique<Impl>();
     RingConfig rc;
     rc.ring_size = config.ring_size;
@@ -147,6 +154,8 @@ std::unique_ptr<WindowCapture> WindowCapture::start(std::shared_ptr<MetalDevice>
                                                        dispatch_semaphore_signal(done);
                                                      }];
         if (!wait(done, 5.0)) return fail("SCShareableContent timed out");
+        // SCStreamErrorUserDeclined: TCC said no after all.
+        if (!content && content_error && content_error.code == -3801) return refused();
         if (!content)
             return fail(std::string("SCShareableContent failed: ") +
                         (content_error ? content_error.localizedDescription.UTF8String : "unknown"));
@@ -226,7 +235,19 @@ std::vector<SharedImage> WindowCapture::images() const { return impl_->ring->ima
 std::optional<SharedImage> WindowCapture::image(uint64_t id) const { return impl_->ring->image(id); }
 uint64_t WindowCapture::images_generation() const { return impl_->ring->images_generation(); }
 SharedTimeline WindowCapture::timeline() const { return impl_->ring->timeline(); }
-bool WindowCapture::closed() const { return impl_->sink.closed.load() || impl_->ring->closed(); }
+bool WindowCapture::closed() const {
+    if (impl_->sink.closed.load() || impl_->ring->closed()) return true;
+    // A window that is gone delivers no frames, and whether the stream then
+    // stops with an error is ScreenCaptureKit's business: ask the window
+    // server (at most every 250 ms).
+    int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch()).count();
+    int64_t last = impl_->last_exists_check.load();
+    if (now - last >= 250 && impl_->last_exists_check.compare_exchange_strong(last, now) &&
+        !sys::describe_window(impl_->sink.window))
+        impl_->sink.closed = true;
+    return impl_->sink.closed.load();
+}
 void WindowCapture::set_frame_callback(std::function<void()> callback) {
     impl_->ring->set_frame_callback(std::move(callback));
 }

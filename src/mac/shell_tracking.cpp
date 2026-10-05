@@ -22,8 +22,63 @@ uint32_t diff(const WindowSnapshot& a, const WindowSnapshot& b) {
     return c;
 }
 
-bool manageable_subrole(const std::string& s) {
-    return s.empty() || s == "AXStandardWindow" || s == "AXDialog" || s == "AXUnknown";
+// Standard windows and dialogs; a window of unknown subrole only with a
+// title or a close button. AppKit's own helper windows are AXUnknown with
+// neither: the full-display window that animates a fullscreen transition
+// (a normal-layer window for half a second) and a fullscreen window's
+// title-bar strip.
+bool manageable(const ax::WindowInfo& w) {
+    if (w.subrole == "AXStandardWindow" || w.subrole == "AXDialog") return true;
+    if (w.subrole.empty() || w.subrole == "AXUnknown") return w.closable || !w.title.empty();
+    return false;
+}
+
+// An application's window on an inactive Space is kept this long before it
+// counts as gone: a window entering or leaving fullscreen passes through
+// another Space for the length of the animation.
+constexpr auto kSpaceGrace = std::chrono::milliseconds(1000);
+
+// A tracked window the window server no longer shows. Without Accessibility
+// that is all there is to know: it is gone for the policy core (minimized,
+// its application hidden, closed, or on another Space). With it, an AX scan
+// completed after the window went off screen tells which:
+//   * minimized: kept, reported minimized;
+//   * fullscreen in its own Space while another Space is active: kept;
+//   * on another Space, or its application hidden: kept while this backend
+//     hides it (like a cloaked window on Windows), otherwise gone once it
+//     stayed away for kSpaceGrace;
+//   * closed or ordered out (AX: invalid element): gone.
+// Until such a scan, or while the application does not answer, the window
+// is kept as it was.
+bool keep_offscreen(Tracked& t, AppFacts& f, const ax::WindowInfo* ai, bool hidden_by_us,
+                    std::chrono::steady_clock::time_point now) {
+    if (!t.offscreen) {
+        t.offscreen = true;
+        t.offscreen_scan = f.scans;
+        t.offscreen_since = now;
+    }
+    if (!f.worker) return false;
+    // A scan already running when the window left may have read it before:
+    // only the one after that is certain to have seen the change.
+    if (f.scans < t.offscreen_scan + 2) {
+        if (!f.unresponsive) f.worker->request_rescan();  // coalesced by the worker
+        return true;
+    }
+    bool keep = false;
+    const char* why = "gone";
+    if (!ai) {
+        why = "gone (closed or ordered out)";
+    } else if (ai->minimized) {
+        keep = true, why = "minimized";
+    } else if (hidden_by_us) {
+        keep = true, why = "hidden by this backend";
+    } else if (ai->other_space && ai->fullscreen) {
+        keep = true, why = "fullscreen, its Space inactive";
+    } else if (now - t.offscreen_since < kSpaceGrace) {
+        keep = true, why = "away briefly";
+    }
+    sys::trace("cgid %u off screen: %s (other_space %d)", t.cgid, why, ai && ai->other_space);
+    return keep;
 }
 
 }  // namespace
@@ -123,14 +178,17 @@ void ShellBackend::Impl::refresh() {
     std::vector<sys::Screen> now_screens = sys::screens();
     // Every display asleep: the window server's geometry is not meaningful
     // (it reports a scaled placeholder space). Wait for a display to wake.
-    if (now_screens.empty()) return;
+    if (now_screens.empty()) {
+        sys::trace("refresh: no awake display");
+        return;
+    }
     std::vector<sys::CgWindow> list = sys::window_list(false);
     uint32_t front = sys::frontmost_pid();
+    auto now = std::chrono::steady_clock::now();
 
     // Application facts and AX snapshots, gathered outside the lock.
-    std::map<uint32_t, std::map<uint32_t, ax::WindowInfo>> ax_infos;
-    std::map<uint32_t, bool> ax_known;
-    std::set<uint32_t> pids, checked;
+    std::map<uint32_t, AppFacts> facts;
+    std::set<uint32_t> checked;
     for (const auto& w : list) {
         if (w.layer != 0 || w.pid == self_pid || !in_scope(w.pid)) continue;
         // An application still launching may not be Regular yet: re-ask
@@ -139,13 +197,21 @@ void ShellBackend::Impl::refresh() {
         if ((known == apps.end() || !known->second || !known->second->regular) && checked.insert(w.pid).second)
             apps[w.pid] = sys::app(w.pid);
         const auto& a = apps[w.pid];
-        if (!a || !a->regular) continue;
-        if (pids.insert(w.pid).second && permissions.accessibility) {
-            if (auto worker = worker_for(w.pid); worker && worker->scanned()) {
-                ax_infos[w.pid] = worker->windows();
-                ax_known[w.pid] = true;
-            }
+        if (!a || !a->regular || facts.count(w.pid)) continue;
+        AppFacts& f = facts[w.pid];
+        if (!permissions.accessibility) continue;
+        f.worker = worker_for(w.pid);
+        if (!f.worker) continue;
+        // Read the count before the snapshot: the snapshot is at least that fresh.
+        f.scans = f.worker->scans();
+        f.unresponsive = f.worker->unresponsive();
+        if (f.scans > 0) {
+            f.infos = f.worker->windows();
+            f.focused = f.worker->focused();
         }
+        // Until the application's first AX scan (or its timeout), its new
+        // windows wait, so they are reported with their titles and state.
+        f.first_scan_pending = f.scans == 0 && !f.unresponsive && now - f.worker->started() < first_scan_wait();
     }
 
     std::vector<Event> events;
@@ -174,27 +240,40 @@ void ShellBackend::Impl::refresh() {
 
         std::set<uint32_t> seen;
         for (const auto& w : list) {
-            if (w.layer != 0 || !pids.count(w.pid) || ignored.count(w.id)) continue;
+            if (w.layer != 0 || ignored.count(w.id)) continue;
+            auto fi = facts.find(w.pid);
+            if (fi == facts.end()) continue;
+            AppFacts& f = fi->second;
             auto tracked = by_cgid.find(w.id);
             bool is_tracked = tracked != by_cgid.end();
+            bool visible = w.onscreen && w.alpha > 0.0 && w.frame.width > 1 && w.frame.height > 1;
             const ax::WindowInfo* ai = nullptr;
-            if (ax_known.count(w.pid)) {
-                auto& infos = ax_infos[w.pid];
-                auto it = infos.find(w.id);
-                if (it != infos.end()) ai = &it->second;
-                else if (!is_tracked && w.onscreen) {
+            if (f.scans > 0) {
+                auto it = f.infos.find(w.id);
+                if (it != f.infos.end()) ai = &it->second;
+            }
+            if (!is_tracked) {
+                if (!visible || f.first_scan_pending) continue;
+                if (f.scans > 0 && (!ai || ai->other_space)) {
                     // Not an AX window (yet): ask the application once more,
-                    // decide on the next pass.
-                    if (rescan_asked.insert(w.id).second)
-                        if (auto wk = workers.find(w.pid); wk != workers.end()) wk->second->request_rescan();
+                    // decide on a later pass.
+                    if (rescan_asked.insert(w.id).second) f.worker->request_rescan();
                     continue;
                 }
             }
-            if (ai && !manageable_subrole(ai->subrole)) continue;
+            if (ai && !manageable(*ai)) continue;
             bool hidden_by_us = is_tracked && tracked->second.hidden != Hidden::None;
-            bool minimized = ai && ai->minimized;
-            bool visible = w.onscreen && w.alpha > 0.0 && w.frame.width > 1 && w.frame.height > 1;
-            if (!visible && !(is_tracked && (hidden_by_us || minimized))) continue;
+            bool minimized = ai && ai->minimized && !visible;
+            if (is_tracked) {
+                Tracked& t = tracked->second;
+                if (visible) {
+                    t.offscreen = false;
+                } else if (!keep_offscreen(t, f, ai, hidden_by_us, now)) {
+                    continue;  // reported removed below
+                } else {
+                    minimized = minimized || (f.scans <= t.offscreen_scan && t.last.minimized);
+                }
+            }
             seen.insert(w.id);
 
             WindowSnapshot s;
@@ -225,6 +304,8 @@ void ShellBackend::Impl::refresh() {
                 by_id.emplace(t.id, w.id);
                 by_cgid.emplace(w.id, t);
                 rescan_asked.erase(w.id);
+                sys::trace("added cgid %u pid %u title '%s' (cg '%s', ax %s)", w.id, w.pid, s.title.c_str(),
+                           w.title.c_str(), ai ? ai->title.c_str() : "<unknown>");
                 events.push_back(WindowAdded{s});
                 continue;
             }
@@ -250,20 +331,30 @@ void ShellBackend::Impl::refresh() {
                 continue;
             }
             journal_dirty |= it->second.hidden != Hidden::None;
+            sys::trace("removed cgid %u (id %llu)", it->first, (unsigned long long)it->second.id);
             events.push_back(WindowRemoved{it->second.id});
             by_id.erase(it->second.id);
             it = by_cgid.erase(it);
         }
 
-        // Focus: the frontmost application's front-most normal window.
+        // Focus: the frontmost application's key window (AX); without
+        // Accessibility its front-most normal window, which is usually the
+        // same (a window ordered front without activation sits above it).
         WindowId focus = kNoWindow;
-        for (const auto& w : list) {
-            if (w.layer != 0 || !w.onscreen || w.pid != front) continue;
-            auto it = by_cgid.find(w.id);
+        auto ff = facts.find(front);
+        if (ff != facts.end() && ff->second.scans > 0) {
+            auto it = by_cgid.find(ff->second.focused);
             if (it != by_cgid.end()) focus = it->second.id;
-            break;
+        } else {
+            for (const auto& w : list) {
+                if (w.layer != 0 || !w.onscreen || w.pid != front) continue;
+                auto it = by_cgid.find(w.id);
+                if (it != by_cgid.end()) focus = it->second.id;
+                break;
+            }
         }
         if (focus != focused) {
+            sys::trace("focus: frontmost pid %u -> window %llu", front, (unsigned long long)focus);
             focused = focus;
             events.push_back(FocusChanged{focus});
         }

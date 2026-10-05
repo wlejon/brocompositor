@@ -7,9 +7,14 @@
 //   move <name> <x> <y> <w> <h>              -> ok
 //   frame <name>                             -> ok <x> <y> <w> <h>
 //   title <name> <text...>                   -> ok
-//   minimize <name> / unminimize <name>      -> ok
+//   color <name> <rrggbb>                    -> ok   (new content: a capture gets a new frame)
+//   minimize <name> / unminimize <name>      -> ok once the Dock animation finished (AppKit ignores a
+//                                               close or move issued while it runs)
+//   fullscreen <name> / unfullscreen <name>  -> ok once the window entered / left its own Space
+//   state <name>                             -> ok <minimized 0|1> <visible 0|1> <onActiveSpace 0|1> <fullscreen 0|1>
 //   activate <name>                          -> ok   (makes this app frontmost, the window key)
 //   close <name>                             -> ok
+//   orderout <name>                          -> ok   (hides the window but keeps it, like a closed panel)
 //   yield <pid>                              -> ok   (re-activates the app that was frontmost)
 //   hang <ms>                                -> ok, then the main thread sleeps <ms>
 //   quit                                     -> ok, exits
@@ -34,6 +39,28 @@ void reply(const std::string& s) {
 }
 
 CGFloat primary_height() { return NSScreen.screens.count ? NSScreen.screens[0].frame.size.height : 0; }
+
+// Replies "ok" when `win` posts `name` (an animation finished), or "error
+// timeout" after 5 s. The command's caller waits for the reply line.
+void reply_after(NSWindow* win, NSNotificationName name) {
+    __block id token = nil;
+    __block bool done = false;
+    token = [NSNotificationCenter.defaultCenter addObserverForName:name
+                                                            object:win
+                                                             queue:NSOperationQueue.mainQueue
+                                                        usingBlock:^(NSNotification*) {
+                                                          if (done) return;
+                                                          done = true;
+                                                          [NSNotificationCenter.defaultCenter removeObserver:token];
+                                                          reply("ok");
+                                                        }];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+      if (done) return;
+      done = true;
+      [NSNotificationCenter.defaultCenter removeObserver:token];
+      reply("error timeout");
+    });
+}
 
 // Quartz (top-left origin, y down) <-> Cocoa (bottom-left origin, y up).
 NSRect to_cocoa(double x, double y, double w, double h) { return NSMakeRect(x, primary_height() - y - h, w, h); }
@@ -113,12 +140,41 @@ std::string run(const std::string& line) {
         win.title = [NSString stringWithUTF8String:text.c_str()];
         return "ok";
     }
-    if (cmd == "minimize") {
-        [win miniaturize:nil];
+    if (cmd == "color") {
+        std::string hex;
+        in >> hex;
+        win.backgroundColor = color(hex);
+        [win display];
         return "ok";
     }
+    if (cmd == "minimize") {
+        if (win.miniaturized) return "ok";
+        reply_after(win, NSWindowDidMiniaturizeNotification);
+        [win miniaturize:nil];
+        return {};
+    }
     if (cmd == "unminimize") {
+        if (!win.miniaturized) return "ok";
+        reply_after(win, NSWindowDidDeminiaturizeNotification);
         [win deminiaturize:nil];
+        return {};
+    }
+    if (cmd == "fullscreen" || cmd == "unfullscreen") {
+        bool want = cmd == "fullscreen";
+        if (bool(win.styleMask & NSWindowStyleMaskFullScreen) == want) return "ok";
+        reply_after(win, want ? NSWindowDidEnterFullScreenNotification : NSWindowDidExitFullScreenNotification);
+        win.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+        [win toggleFullScreen:nil];
+        return {};
+    }
+    if (cmd == "state") {
+        std::ostringstream o;
+        o << "ok " << int(win.miniaturized) << " " << int(win.visible) << " " << int(win.onActiveSpace) << " "
+          << int(bool(win.styleMask & NSWindowStyleMaskFullScreen));
+        return o.str();
+    }
+    if (cmd == "orderout") {
+        [win orderOut:nil];
         return "ok";
     }
     if (cmd == "activate") {

@@ -114,8 +114,7 @@ RecoveryReport ShellBackend::Impl::recover_stale() {
         // permission) claims it again.
         if (keep) {
             std::error_code ec;
-            std::filesystem::rename(
-                j.file, dir / (std::to_string(j.pid) + "-" + std::to_string(j.pid_start) + ".journal"), ec);
+            std::filesystem::rename(j.file, dir / j.name, ec);
         } else {
             shell::Journal::discard(j);
         }

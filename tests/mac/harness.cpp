@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -60,16 +61,21 @@ void skip(const std::string& why) {
     std::_Exit(failures() ? 1 : 77);
 }
 
+// responsible_path is the binary tccd checks this process's grants against
+// (for anything started over ssh: /usr/libexec/sshd-keygen-wrapper, not the
+// sshd-session that runs the connection).
 void require_accessibility() {
     if (!mac_permissions().accessibility)
-        skip("needs Accessibility: grant it to " + mac_permissions().responsible_path +
-             " in System Settings > Privacy & Security > Accessibility");
+        skip("needs Accessibility: in System Settings > Privacy & Security > Accessibility, add " +
+             mac_permissions().responsible_path + " (+, then Cmd-Shift-G for the path) and switch it on");
 }
 
 void require_screen_recording() {
     if (!mac_permissions().screen_recording)
-        skip("needs Screen Recording: grant it to " + mac_permissions().responsible_path +
-             " in System Settings > Privacy & Security > Screen & System Audio Recording");
+        skip("needs Screen Recording: in System Settings > Privacy & Security > Screen & System Audio Recording, "
+             "add " + mac_permissions().responsible_path +
+             " to the upper list, \"Screen & System Audio Recording\" (+, then Cmd-Shift-G for the path), and "
+             "switch it on, then run the tests again (a running process may keep its old answer)");
 }
 
 void require_unlocked() {
@@ -81,6 +87,60 @@ void require_display() {
     // wakes a sleeping display within a moment.
     if (!eventually(display_awake, 5000ms)) skip("no display is awake");
 }
+
+Rect cg_display_bounds(uint32_t display) {
+    CGRect b = CGDisplayBounds(display);
+    return Rect{int32_t(std::lround(b.origin.x)), int32_t(std::lround(b.origin.y)), int32_t(std::lround(b.size.width)),
+                int32_t(std::lround(b.size.height))};
+}
+
+uint32_t cg_display_dpi(uint32_t display) {
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
+    if (!mode) return 0;
+    double scale = double(CGDisplayModeGetPixelWidth(mode)) / double(CGDisplayModeGetWidth(mode));
+    CGDisplayModeRelease(mode);
+    return uint32_t(std::lround(96.0 * scale));
+}
+
+uint32_t cg_main_display() { return CGMainDisplayID(); }
+
+bool menu_bar_autohides() {
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("_HIHideMenuBar"), kCFPreferencesAnyApplication);
+    bool on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(static_cast<CFBooleanRef>(v));
+    if (v) CFRelease(v);
+    return on;
+}
+
+bool cg_switch_mode(uint32_t display, int32_t* width, int32_t* height, uint32_t* dpi) {
+    CGDisplayModeRef cur = CGDisplayCopyDisplayMode(display);
+    if (!cur) return false;
+    size_t cur_width = CGDisplayModeGetWidth(cur);
+    CGDisplayModeRelease(cur);
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(display, nullptr);
+    CGDisplayModeRef pick = nullptr;
+    for (CFIndex i = 0; modes && i < CFArrayGetCount(modes); ++i) {
+        auto m = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
+        if (CGDisplayModeIsUsableForDesktopGUI(m) && CGDisplayModeGetWidth(m) != cur_width) {
+            pick = m;
+            break;
+        }
+    }
+    bool ok = false;
+    if (pick) {
+        *width = int32_t(CGDisplayModeGetWidth(pick));
+        *height = int32_t(CGDisplayModeGetHeight(pick));
+        *dpi = uint32_t(std::lround(96.0 * double(CGDisplayModeGetPixelWidth(pick)) / double(*width)));
+        CGDisplayConfigRef cfg = nullptr;
+        if (CGBeginDisplayConfiguration(&cfg) == kCGErrorSuccess) {
+            CGConfigureDisplayWithDisplayMode(cfg, display, pick, nullptr);
+            ok = CGCompleteDisplayConfiguration(cfg, kCGConfigureForAppOnly) == kCGErrorSuccess;
+        }
+    }
+    if (modes) CFRelease(modes);
+    return ok;
+}
+
+void cg_restore_modes() { CGRestorePermanentDisplayConfiguration(); }
 
 std::string test_journal_dir() {
     static const std::string dir = [] {

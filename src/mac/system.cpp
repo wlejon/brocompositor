@@ -8,7 +8,11 @@
 #include <sys/proc_info.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 
 namespace brocompositor::mac::sys {
 
@@ -75,6 +79,26 @@ bool process_alive(uint32_t pid, uint64_t start) {
     if (start == 0) return true;
     uint64_t now = process_start_time(pid);
     return now == 0 || now == start;
+}
+
+bool tracing() {
+    static const bool on = [] {
+        const char* v = std::getenv("BROCOMPOSITOR_TRACE");
+        return v && *v && *v != '0';
+    }();
+    return on;
+}
+
+void trace(const char* format, ...) {
+    if (!tracing()) return;
+    char buf[1024];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch()).count() % 100000;
+    std::fprintf(stderr, "[bc %05lld] %s\n", (long long)ms, buf);
 }
 
 bool screen_locked() {

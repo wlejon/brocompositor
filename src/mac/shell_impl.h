@@ -36,6 +36,22 @@ struct Tracked {
     Hidden hidden = Hidden::None;
     Rect restore_frame;   // frame before the backend hid it
     Rect parked_frame;    // where a Park left it (read back)
+    // Off screen in the window server's list since the application's AX
+    // scan count was this (minimized, closed, ordered out, another Space):
+    // which of those it is is decided by a scan completed after it.
+    bool offscreen = false;
+    uint64_t offscreen_scan = 0;
+    std::chrono::steady_clock::time_point offscreen_since;
+};
+
+// What one tracking pass knows about an application through Accessibility.
+struct AppFacts {
+    std::shared_ptr<AppWorker> worker;  // null without Accessibility
+    uint64_t scans = 0;                 // the worker's scan count, read before `infos`
+    bool unresponsive = false;
+    bool first_scan_pending = false;
+    std::map<uint32_t, ax::WindowInfo> infos;
+    uint32_t focused = 0;  // the application's AX focused (key) window
 };
 
 struct Reservation {
@@ -98,6 +114,8 @@ struct ShellBackend::Impl : std::enable_shared_from_this<ShellBackend::Impl> {
 
     // shell_tracking.cpp (tracking thread)
     void refresh();
+    // How long new windows of an application wait for its first AX scan.
+    std::chrono::milliseconds first_scan_wait() const { return 2 * config.ax_timeout + std::chrono::milliseconds(250); }
     // Monitors with reservations applied; updates reservation rectangles and
     // appends ReservationChanged for any that moved. Caller holds mutex.
     std::vector<MonitorSnapshot> build_monitors(const std::vector<sys::Screen>& s, std::vector<Event>* renegotiated);
@@ -144,5 +162,8 @@ std::string default_journal_dir();
 inline constexpr int64_t kParkedVisibleArea = 64 * 64;
 AXError set_frame(AXUIElementRef window, const Rect& frame);
 int64_t visible_area(const Rect& r, const std::vector<Rect>& displays);
+// Waits (at most 300 ms) until the window server's entry for the window
+// satisfies `done`, so that a completed operation is what query() sees.
+void await_window_server(uint32_t cgid, const std::function<bool(const sys::CgWindow&)>& done);
 
 }  // namespace brocompositor::mac

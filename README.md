@@ -102,40 +102,134 @@ within what macOS permits without SIP changes or private Spaces APIs:
 
 * **Discovery** needs no permission: the window server's list
   (CGWindowList, normal layer, regular applications), polled on the
-  backend's thread and re-read at once on NSWorkspace launch / terminate /
-  activate notifications and on Accessibility notifications (window
-  created, destroyed, moved, resized, retitled, (de)minimized). Without
-  Screen Recording other applications' titles come from Accessibility, or
-  are empty without it too.
+  backend's thread and re-read at once on Accessibility notifications
+  (window created, destroyed, moved, resized, retitled, (de)minimized) and,
+  in a host that runs its main run loop, on NSWorkspace launch / terminate /
+  activate notifications. With Accessibility a window is reported once its
+  application's AX facts are in, so it arrives with its title, subrole and
+  state; AppKit's helper windows (the fullscreen-transition window, a
+  fullscreen window's title-bar strip: `AXUnknown`, untitled, no close
+  button) are not reported. Without Screen Recording other applications'
+  titles come from Accessibility, or are empty without it too.
+* **Off-screen windows** (with Accessibility; without it a window that
+  leaves the screen is simply removed): minimized windows stay, reported
+  minimized; a fullscreen window stays while another Space is active; a
+  window on another Space or of a hidden application is removed after 1 s
+  (as a cloaked window on another virtual desktop is on Windows) unless the
+  backend hid it, and comes back as a new window; a closed or ordered-out
+  window is removed. AX tells these apart: minimized windows are in
+  `AXWindows`, windows on an inactive Space are not but their elements still
+  answer (and can be moved), closed / ordered-out ones answer
+  `kAXErrorInvalidUIElement`. The window server's records of the last three
+  are identical.
 * **Operations** (place, hide/show, focus, close) need Accessibility. Each
   application gets a worker thread with its own run loop and AXObserver;
-  every AX call has a messaging timeout (`ax_timeout`, 1 s), so a hung
-  application fails its own operations after a timeout and stalls nothing
-  else. Without Accessibility every operation completes at once with
-  false / `FocusResult::Unavailable`.
-* **Workspaces** are emulated by parking: a hidden window is moved so that
-  only its top-left point lies on a display corner (macOS keeps a sliver of
-  every window reachable; the backend reads back where the window really
-  went and falls back to minimizing when more than 64x64 pt stayed visible).
-  Fullscreen windows live in their own Space and are not hidden.
-* **Displays**: menu-bar- and Dock-aware work areas (NSScreen.visibleFrame),
-  Retina scale as dpi = 96 x backingScaleFactor, coordinates in Quartz
-  global points (see geometry.h). Edge reservations are virtual (the
-  reported work area shrinks; other applications see no change); there is
-  no appbar protocol on macOS.
-* **Focus** tracking needs no permission (frontmost application + its
-  front-most window in the window server's order); focusing a window makes
-  its application frontmost and raises it (AX). There are no
-  MoveSizeStarted/Ended events.
+  every AX element the backend uses gets the messaging timeout (`ax_timeout`,
+  1 s), so a hung application fails its own operations after a timeout and
+  stalls nothing else. Without Accessibility every operation completes at
+  once with false / `FocusResult::Unavailable`. An operation completes once
+  the window server's list shows its result (at most 300 ms later), so
+  `query()` agrees with it.
+* **Workspaces** are emulated by parking off a display's bottom corner; see
+  the measured limits below. The backend tries each display's bottom
+  corners, reads back where the window went, and falls back to minimizing
+  when more than 64 x 64 pt stayed visible. Parked windows stay parked and
+  journaled across Space switches. Fullscreen windows live in their own
+  Space and are not hidden (refused).
+* **Displays**: the display set, bounds and scale (dpi = 96 x pixels per
+  point of the current mode) come from CoreGraphics on every pass; the
+  menu-bar / Dock insets of the work area from NSScreen.visibleFrame.
+  Coordinates are Quartz global points (see geometry.h). Edge reservations
+  are virtual (the reported work area shrinks; other applications see no
+  change); there is no appbar protocol on macOS.
+* **Focus** is the frontmost application's key window (AXFocusedWindow;
+  without Accessibility its front-most window in the window server's
+  order). Focusing makes the application frontmost (AXFrontmost, then
+  NSRunningApplication if that changed nothing) and raises the window.
+  There are no MoveSizeStarted/Ended events.
 * **Capture**: `mac::WindowCapture` streams one window with ScreenCaptureKit
   (Screen Recording permission) and copies each frame with a Metal blit into
   a `mac::SurfaceRing` of IOSurface-backed textures, signalling a
   MTLSharedEvent timeline; the Vulkan importer imports both through MoltenVK
   (`VK_EXT_metal_objects`). A `SurfaceRing` can be fed IOSurfaces directly.
+  `closed()` also asks the window server whether the window still exists.
 * **Permissions** are queried, never requested (`mac::query_permissions()`
-  does not prompt or open System Settings), and are granted to the
-  *responsible* process it names: the app bundle or terminal that launched
-  the host (`/usr/libexec/sshd-session` for programs started over ssh).
+  does not prompt or open System Settings). `responsible_path` names the
+  binary tccd checks the grants against (see below).
+
+#### What macOS 26 actually does (measured on 26.6.2, M2 Pro)
+
+These were established live, with `BROCOMPOSITOR_TRACE=1` (the backend's
+decisions on stderr) and throwaway probes; the tests pin the parts the
+backend relies on.
+
+* **Parking.** A window can't be placed entirely off the displays. A
+  requested position that leaves any part of the window on a display is
+  kept horizontally (1 pt is enough); one entirely beyond them is pulled
+  back so 40 pt remain. Vertically the title bar is kept inside the
+  display's visible frame: never above the menu bar, never below a bottom
+  Dock's top edge (on a 1496 x 967 pt display with a bottom Dock the
+  lowest top edge is y = 876). So the best park leaves a 1 pt column from
+  the title bar to the display's bottom (1 x 91 pt there). Not measured
+  here: multiple displays (the Mac has one; the candidates avoid corners
+  whose window would cover another display, and the read-back + minimize
+  fallback covers whatever the window server does), a side Dock, and Stage
+  Manager (off on this Mac; untested).
+* **Fullscreen.** Entering fullscreen moves the window to its own Space
+  and switches to it. For the length of the animation AppKit shows an
+  extra normal-layer window covering the display (`AXUnknown`, untitled),
+  and the window itself is briefly on an inactive Space. Windows left on
+  the desktop Space are then off screen in CGWindowList and missing from
+  `AXWindows`, yet their AX elements still work.
+* **Minimize / close.** A minimized window stays in CGWindowList, off
+  screen, with its old bounds, and in `AXWindows` (subrole `AXDialog`
+  while minimized). AX destroys and re-creates a window's element when it
+  is deminiaturized (same CGWindowID), so notifications must be
+  re-subscribed per element. AppKit ignores `close` (and moves) while the
+  Dock's (de)miniaturize animation runs. A closed window may linger in
+  CGWindowList for a moment, off screen.
+* **The window server's list trails AX** by a few frames after a move.
+* **Titles without Screen Recording.** CGWindowList omits other processes'
+  window names; AX titles work with Accessibility alone.
+* **AX messaging timeouts are per element**: an element copied out of
+  another (a window out of the application) starts at the system default
+  (measured ~1.5 s, documented 6 s), not the parent's timeout.
+* **Frontmost application.** Without a running main run loop,
+  `NSWorkspace.frontmostApplication` and `NSRunningApplication.active` never
+  change and NSWorkspace notifications never arrive. `GetFrontProcess`
+  (deprecated, not removed) is current and answers in ~1 ms even when the
+  frontmost application hangs; the supported AX route (system-wide
+  `AXFocusedApplication`) is current but blocks for the whole timeout on a
+  hung frontmost application. The backend uses `GetFrontProcess`.
+* **Finder** showing only the desktop does not become frontmost through
+  `AXFrontmost` (it reports success); `NSRunningApplication activate` works
+  from a background process.
+* **NSScreen** in a process that does not run NSApplication's event loop
+  keeps the configuration it first read: after a display mode change it
+  still reported the old size, even after spinning the main run loop.
+  CoreGraphics (`CGGetActiveDisplayList`, `CGDisplayBounds`, the mode's
+  pixel / point ratio) is always current.
+* **Screen lock / display sleep.** While the display sleeps the session
+  reports `CGSSessionScreenIsLocked` (loginwindow shields the screen); on
+  wake without a password requirement it clears.
+
+#### Permissions over ssh
+
+tccd attributes a process started over ssh to
+**`/usr/libexec/sshd-keygen-wrapper`** (identifier
+`com.apple.sshd-keygen-wrapper`, launchd's ssh Program), not to the
+`/usr/libexec/sshd-session` process that runs the connection; tccd's log
+(`log show --process tccd`) shows that subject for every request, and
+`mac::query_permissions()` reports it as `responsible_path`. Accessibility
+and Screen Recording are both checked against it (`kTCCServiceAccessibility`,
+`kTCCServiceScreenCapture`; `CGPreflightScreenCaptureAccess` and
+ScreenCaptureKit consult the same grant). tccd never prompts for a platform
+binary: a missing grant is a silent denial. To grant one, in System Settings
+> Privacy & Security > Accessibility, or > Screen & System Audio Recording
+(the upper list, "Screen & System Audio Recording", not "System Audio
+Recording Only"), click +, press Cmd-Shift-G, enter
+`/usr/libexec/sshd-keygen-wrapper`, add it and switch it on. A process
+started afterwards sees the grant (a new ssh command is enough).
 
 ### Linux: the server role
 

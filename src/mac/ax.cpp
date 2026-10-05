@@ -20,23 +20,36 @@ CFRef<T> copy_attr(AXUIElementRef e, CFStringRef attr, AXError* error) {
 
 }  // namespace
 
+void set_timeout(AXUIElementRef element, std::chrono::milliseconds timeout) {
+    if (element) AXUIElementSetMessagingTimeout(element, float(timeout.count()) / 1000.0f);
+}
+
 Element application(uint32_t pid, std::chrono::milliseconds timeout) {
     Element app(AXUIElementCreateApplication(pid_t(pid)));
-    if (app) AXUIElementSetMessagingTimeout(app.get(), float(timeout.count()) / 1000.0f);
+    set_timeout(app.get(), timeout);
     return app;
 }
 
-std::vector<Element> windows(AXUIElementRef app, AXError* error) {
+std::vector<Element> windows(AXUIElementRef app, std::chrono::milliseconds timeout, AXError* error) {
     std::vector<Element> out;
     auto list = copy_attr<CFArrayRef>(app, kAXWindowsAttribute, error);
     if (!list || CFGetTypeID(list.get()) != CFArrayGetTypeID()) return out;
-    for (CFIndex i = 0, n = CFArrayGetCount(list.get()); i < n; ++i)
+    for (CFIndex i = 0, n = CFArrayGetCount(list.get()); i < n; ++i) {
         out.push_back(Element::retain(static_cast<AXUIElementRef>(CFArrayGetValueAtIndex(list.get(), i))));
+        set_timeout(out.back().get(), timeout);
+    }
     return out;
 }
 
-Element focused_window(AXUIElementRef app, AXError* error) {
-    return copy_attr<AXUIElementRef>(app, kAXFocusedWindowAttribute, error);
+uint32_t focused_window(AXUIElementRef app, AXError* error) {
+    auto w = copy_attr<AXUIElementRef>(app, kAXFocusedWindowAttribute, error);
+    return w ? window_id(w.get()) : 0;
+}
+
+AXError probe(AXUIElementRef element) {
+    AXError err = kAXErrorSuccess;
+    copy_attr<CFStringRef>(element, kAXRoleAttribute, &err);
+    return err;
 }
 
 uint32_t window_id(AXUIElementRef window) {
@@ -80,6 +93,7 @@ std::optional<WindowInfo> info(AXUIElementRef window, AXError* error) {
     w.fullscreen = get_bool(window, kFullScreen, nullptr).value_or(false);
     Boolean settable = false;
     if (AXUIElementIsAttributeSettable(window, kAXSizeAttribute, &settable) == kAXErrorSuccess) w.resizable = settable;
+    w.closable = bool(copy_attr<AXUIElementRef>(window, kAXCloseButtonAttribute, nullptr));
     return w;
 }
 
@@ -101,13 +115,11 @@ AXError set_bool(AXUIElementRef element, CFStringRef attribute, bool value) {
 
 AXError raise(AXUIElementRef window) { return AXUIElementPerformAction(window, kAXRaiseAction); }
 
-AXError press_close_button(AXUIElementRef window) {
+AXError press_close_button(AXUIElementRef window, std::chrono::milliseconds timeout) {
     AXError err = kAXErrorSuccess;
     auto button = copy_attr<AXUIElementRef>(window, kAXCloseButtonAttribute, &err);
     if (!button) return err == kAXErrorSuccess ? kAXErrorAttributeUnsupported : err;
-    // Elements do not inherit a messaging timeout; the press goes to the
-    // same application the window call just answered for.
-    AXUIElementSetMessagingTimeout(button.get(), 1.0f);
+    set_timeout(button.get(), timeout);  // not inherited from the window
     return AXUIElementPerformAction(button.get(), kAXPressAction);
 }
 

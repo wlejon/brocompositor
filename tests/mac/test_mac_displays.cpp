@@ -1,7 +1,11 @@
 // Displays and virtual edge reservations: menu-bar/Dock-aware work areas in
-// Quartz points, Retina dpi, reservations that stack, renegotiate when one
-// is released, and never change what anything else sees.
+// Quartz points, Retina dpi, both as the window server reports them now
+// (and, opt-in, after a display mode change), reservations that stack,
+// renegotiate when one is released, and never change what anything else
+// sees.
 #include "harness.h"
+
+#include <cstdlib>
 
 using namespace bctest;
 using namespace brocompositor;
@@ -42,6 +46,58 @@ void monitors() {
     REQUIRE(p);
     CHECK_EQ(p->bounds.x, 0);
     CHECK_EQ(p->bounds.y, 0);
+
+    // The window server's own answer, now: bounds, and dpi from the current
+    // mode's pixels per point.
+    for (const auto& m : ms) {
+        CHECK(m.bounds == cg_display_bounds(m.id));
+        CHECK_EQ(m.dpi, cg_display_dpi(m.id));
+    }
+    // The menu bar is not part of the work area (unless it hides itself).
+    if (!menu_bar_autohides()) CHECK(p->work_area.y >= p->bounds.y + 20);
+}
+
+// Opt-in (BC_MAC_DISPLAY_MODE_TEST=1): switches the main display to another
+// mode for this process only (kCGConfigureForAppOnly, undone at exit and
+// explicitly), visibly, for a few seconds, and checks that the backend
+// reports the new geometry. NSScreen in a process like this one never sees
+// the change; the backend reads CoreGraphics.
+void mode_change() {
+    const char* opt = std::getenv("BC_MAC_DISPLAY_MODE_TEST");
+    if (!opt || std::string(opt) != "1") {
+        std::printf("-- display mode change: SKIP (opt-in: BC_MAC_DISPLAY_MODE_TEST=1)\n");
+        return;
+    }
+    std::printf("-- display mode change\n");
+    std::string err;
+    auto backend = mac::ShellBackend::create(test_shell_config(getpid()), &err);
+    REQUIRE(backend);
+    EventLog log(backend->events());
+    log.settle(200ms);
+    uint32_t d = cg_main_display();
+    Rect before = cg_display_bounds(d);
+    int32_t w = 0, h = 0;
+    uint32_t dpi = 0;
+    if (!cg_switch_mode(d, &w, &h, &dpi)) {
+        std::printf("   no other usable mode\n");
+        return;
+    }
+    std::printf("   switched to %dx%d (dpi %u) for this process\n", w, h, dpi);
+    auto changed = log.wait<MonitorsChanged>([&](const MonitorsChanged& e) {
+        for (const auto& m : e.monitors)
+            if (m.id == d) return m.bounds.width == w && m.bounds.height == h && m.dpi == dpi;
+        return false;
+    }, 8000ms);
+    CHECK(changed);
+    if (changed)
+        for (const auto& m : changed->monitors)
+            if (m.id == d) CHECK(m.bounds.contains(m.work_area) && !m.work_area.empty());
+    cg_restore_modes();
+    CHECK(log.wait<MonitorsChanged>([&](const MonitorsChanged& e) {
+        for (const auto& m : e.monitors)
+            if (m.id == d) return m.bounds == before;
+        return false;
+    }, 8000ms));
 }
 
 void reservations() {
@@ -111,5 +167,6 @@ int main() {
     require_display();
     monitors();
     reservations();
+    mode_change();
     return finish("test_mac_displays");
 }

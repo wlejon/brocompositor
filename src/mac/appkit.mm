@@ -5,7 +5,9 @@
 
 #include "mac/system.h"
 
+#include <algorithm>
 #include <cmath>
+#include <map>
 
 namespace brocompositor::mac::sys {
 
@@ -24,31 +26,67 @@ std::string str(NSString* s) {
 
 }  // namespace
 
+// The display set, bounds and scale come from CoreGraphics, which asks the
+// window server on every call from any thread. NSScreen does not: in a
+// process that does not run NSApplication's event loop on its main thread
+// it keeps the configuration it first read (measured on macOS 26: after a
+// display mode change NSScreen still reported the old size, even after
+// spinning the main run loop), so it only contributes what CoreGraphics
+// lacks, the names and the menu-bar / Dock insets of the visible frame,
+// applied to the current bounds.
 std::vector<Screen> screens() {
     std::vector<Screen> out;
+    CGDirectDisplayID ids[32];
+    uint32_t count = 0;
+    if (CGGetActiveDisplayList(32, ids, &count) != kCGErrorSuccess) return out;
+    struct Insets {
+        std::string name;
+        double left = 0, top = 0, right = 0, bottom = 0;
+    };
+    std::map<CGDirectDisplayID, Insets> insets;
     @autoreleasepool {
-        NSArray<NSScreen*>* all = [NSScreen screens];
-        if (all.count == 0) return out;
-        // Cocoa's global space has its origin at the bottom-left of the
-        // primary screen (the first one), y up; Quartz flips it.
-        CGFloat primary_height = all[0].frame.size.height;
-        for (NSScreen* s in all) {
+        for (NSScreen* s in [NSScreen screens]) {
             NSNumber* number = s.deviceDescription[@"NSScreenNumber"];
             if (!number) continue;
-            CGDirectDisplayID id = number.unsignedIntValue;
-            if (CGDisplayIsAsleep(id)) continue;
-            Screen sc;
-            sc.display_id = id;
-            if (@available(macOS 10.15, *)) sc.name = str(s.localizedName);
-            if (sc.name.empty()) sc.name = "display-" + std::to_string(id);
-            sc.frame = to_rect(CGDisplayBounds(id));
-            NSRect v = s.visibleFrame;
-            sc.visible = to_rect(CGRectMake(v.origin.x, primary_height - v.origin.y - v.size.height, v.size.width,
-                                            v.size.height));
-            sc.scale = s.backingScaleFactor;
-            sc.primary = CGDisplayIsMain(id);
-            out.push_back(sc);
+            Insets in;
+            if (@available(macOS 10.15, *)) in.name = str(s.localizedName);
+            NSRect f = s.frame, v = s.visibleFrame;
+            in.left = std::max(0.0, v.origin.x - f.origin.x);
+            in.bottom = std::max(0.0, v.origin.y - f.origin.y);  // Cocoa: y up
+            in.right = std::max(0.0, (f.origin.x + f.size.width) - (v.origin.x + v.size.width));
+            in.top = std::max(0.0, (f.origin.y + f.size.height) - (v.origin.y + v.size.height));
+            insets[number.unsignedIntValue] = in;
         }
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        CGDirectDisplayID id = ids[i];
+        // A mirror shows another display's space: not a monitor of its own.
+        if (CGDisplayIsAsleep(id) || CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay) continue;
+        Screen sc;
+        sc.display_id = id;
+        CGRect b = CGDisplayBounds(id);
+        sc.frame = to_rect(b);
+        sc.visible = sc.frame;
+        auto in = insets.find(id);
+        if (in != insets.end()) {
+            sc.name = in->second.name;
+            // Insets larger than half the display are from a stale, larger
+            // configuration: ignore them.
+            if (in->second.left + in->second.right < b.size.width / 2 &&
+                in->second.top + in->second.bottom < b.size.height / 2)
+                sc.visible = to_rect(CGRectMake(b.origin.x + in->second.left, b.origin.y + in->second.top,
+                                                b.size.width - in->second.left - in->second.right,
+                                                b.size.height - in->second.top - in->second.bottom));
+        }
+        if (sc.name.empty()) sc.name = "display-" + std::to_string(id);
+        sc.scale = 1.0;
+        if (CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id)) {
+            size_t points = CGDisplayModeGetWidth(mode), pixels = CGDisplayModeGetPixelWidth(mode);
+            if (points > 0 && pixels > 0) sc.scale = double(pixels) / double(points);
+            CGDisplayModeRelease(mode);
+        }
+        sc.primary = CGDisplayIsMain(id);
+        out.push_back(sc);
     }
     return out;
 }
@@ -68,9 +106,16 @@ std::optional<App> app(uint32_t pid) {
 }
 
 uint32_t frontmost_pid() {
-    // The Process Manager asks the system each time; NSWorkspace's property
-    // is refreshed by notifications on the main run loop, which a host may
-    // not run. Deprecated but present on every macOS this targets.
+    // Measured on macOS 26 from a process that does not run a main run
+    // loop: GetFrontProcess follows activations at once and answers in
+    // about a millisecond even while the frontmost application hangs;
+    // NSWorkspace.frontmostApplication and NSRunningApplication.active never
+    // change (they are refreshed by notifications on the main run loop); the
+    // supported AX route (system-wide AXFocusedApplication) is current but
+    // is served by the frontmost application and blocks for the whole
+    // messaging timeout when it hangs. GetFrontProcess is deprecated, not
+    // removed, and the only one of them a tracking thread can rely on;
+    // NSWorkspace remains as the fallback should it ever stop answering.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     ProcessSerialNumber psn{};
@@ -87,6 +132,13 @@ uint32_t finder_pid() {
     @autoreleasepool {
         NSArray* apps = [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.finder"];
         return apps.count ? uint32_t([apps[0] processIdentifier]) : 0;
+    }
+}
+
+bool activate(uint32_t pid) {
+    @autoreleasepool {
+        NSRunningApplication* a = [NSRunningApplication runningApplicationWithProcessIdentifier:pid_t(pid)];
+        return a && [a activateWithOptions:NSApplicationActivateAllWindows];
     }
 }
 

@@ -1,7 +1,9 @@
 // Window operations through Accessibility, on windows of a test application:
 // place, park / show (journaled), minimize hiding, close, restore on
-// teardown; and a hung application stalls nothing but its own operations.
-// Needs Accessibility (skips otherwise, naming the binary to grant it to).
+// teardown, a parked window across a Space switch and closed by its
+// application; and a hung application stalls nothing but its own
+// operations. Needs Accessibility (skips otherwise, naming the binary to
+// grant it to).
 #include "harness.h"
 
 #include <filesystem>
@@ -26,14 +28,32 @@ Rect app_frame(TestApp& app, const std::string& name) {
     return Rect{int32_t(x), int32_t(y), int32_t(w), int32_t(h)};
 }
 
-size_t journal_parked_entries() {
-    size_t n = 0;
+// The application's own view: minimized (miniaturized) or not.
+bool app_minimized(TestApp& app, const std::string& name) {
+    std::istringstream in(app.cmd("state " + name));
+    std::string ok;
+    int minimized = 0;
+    in >> ok >> minimized;
+    return ok == "ok" && minimized == 1;
+}
+
+// The hide method of every journaled entry (1 park, 2 minimize).
+std::vector<uint32_t> journal_methods() {
+    std::vector<uint32_t> out;
     for (auto& f : std::filesystem::directory_iterator(test_journal_dir())) {
+        if (f.path().extension() != ".journal") continue;
         std::ifstream in(f.path());
         std::string line;
-        while (std::getline(in, line)) n += line.rfind("park ", 0) == 0 ? 1 : 0;
+        while (std::getline(in, line)) {
+            if (line.rfind("park ", 0) != 0) continue;
+            std::istringstream l(line);
+            std::string word;
+            std::vector<std::string> fields;
+            while (l >> word) fields.push_back(word);
+            out.push_back(uint32_t(std::stoul(fields.back())));
+        }
     }
-    return n;
+    return out;
 }
 
 int64_t on_displays(const Rect& r, const std::vector<MonitorSnapshot>& ms) {
@@ -61,27 +81,42 @@ void operations() {
     auto monitors = backend->monitors();
 
     Rect target{260, 240, 520, 360};
+    log.mark();
     auto placed = backend->place(id, target);
     REQUIRE(done(placed));
     CHECK(placed.get());
     CHECK(near(app_frame(app, "ops"), target));
+    auto q = backend->query(id);  // a completed operation is what query() reports
+    REQUIRE(q);
+    CHECK(near(q->frame, target));
     CHECK(log.wait<WindowChanged>([&](const WindowChanged& e) { return e.window.id == id && near(e.window.frame, target); }));
 
-    // Park: (almost) nothing left on any display, journaled while hidden,
-    // no geometry facts reported for the backend's own move.
+    // Park: the window server keeps a sliver of every window on a display
+    // (see README); the backend reports where the window really went, and
+    // minimizes instead when the sliver is too large.
     log.mark();
     auto hidden = backend->set_visible(id, false);
     REQUIRE(done(hidden));
     CHECK(hidden.get());
-    auto q = backend->query(id);
+    q = backend->query(id);
     REQUIRE(q);
-    std::printf("   parked at %d,%d (%lld pt^2 visible)\n", q->frame.x, q->frame.y,
-                (long long)on_displays(q->frame, monitors));
-    CHECK(on_displays(q->frame, monitors) <= 64 * 64 || q->minimized);
-    CHECK_EQ(journal_parked_entries(), size_t(1));
+    Rect truth = app_frame(app, "ops");
+    bool minimized = app_minimized(app, "ops");
+    std::printf("   parked at %d,%d %dx%d (%lld pt^2 visible)%s\n", truth.x, truth.y, truth.width, truth.height,
+                (long long)on_displays(truth, monitors), minimized ? ", minimized instead" : "");
+    auto methods = journal_methods();
+    CHECK_EQ(methods.size(), size_t(1));
+    if (!minimized) {
+        CHECK(near(q->frame, truth, 0));  // query() agrees with the application at once
+        CHECK(on_displays(truth, monitors) <= 64 * 64);
+        CHECK(on_displays(truth, monitors) > 0);  // macOS keeps a sliver: honest about it
+        if (!methods.empty()) CHECK_EQ(methods[0], 1u);
+    } else if (!methods.empty()) {
+        CHECK_EQ(methods[0], 2u);
+    }
     log.settle(400ms);
     CHECK(log.collect<WindowChanged>([&](const WindowChanged& e) {
-              return e.window.id == id && (e.changes & change::Geometry);
+              return e.window.id == id && (e.changes & (change::Geometry | change::State));
           }).empty());
     CHECK(log.collect<WindowRemoved>([&](const WindowRemoved& e) { return e.id == id; }).empty());
 
@@ -89,9 +124,10 @@ void operations() {
     REQUIRE(done(shown));
     CHECK(shown.get());
     CHECK(near(app_frame(app, "ops"), target));
-    CHECK_EQ(journal_parked_entries(), size_t(0));
+    CHECK(!app_minimized(app, "ops"));
+    CHECK(journal_methods().empty());
 
-    // Minimize as the hide method.
+    // Minimize as the hide method (a second backend over the same window).
     {
         auto config = test_shell_config(app.pid());
         config.hide_method = mac::HideMethod::Minimize;
@@ -100,15 +136,24 @@ void operations() {
         EventLog log2(b2->events());
         WindowId id2 = add(log2, cgid);
         REQUIRE(id2 != kNoWindow);
+        log2.mark();
         auto h = b2->set_visible(id2, false);
         REQUIRE(done(h));
         CHECK(h.get());
-        CHECK(eventually([&] { auto s = b2->query(id2); return s && s->minimized; }) ||
-              log2.wait<WindowChanged>([&](const WindowChanged& e) { return e.window.id == id2 && e.window.minimized; }));
+        CHECK(app_minimized(app, "ops"));
+        auto bq = b2->query(id2);
+        REQUIRE(bq);  // still tracked: hidden by this backend
+        log2.settle(400ms);
+        // The backend's own hiding is not a fact for the policy core.
+        CHECK(log2.collect<WindowChanged>([&](const WindowChanged& e) {
+                  return e.window.id == id2 && (e.changes & change::State);
+              }).empty());
+        CHECK(log2.collect<WindowRemoved>([&](const WindowRemoved& e) { return e.id == id2; }).empty());
         // Teardown puts it back.
     }
-    CHECK(eventually([&] { return near(app_frame(app, "ops"), target); }, 5000ms));
+    CHECK(eventually([&] { return !app_minimized(app, "ops") && near(app_frame(app, "ops"), target); }, 5000ms));
 
+    log.mark();
     auto closed = backend->close(id);
     REQUIRE(done(closed));
     CHECK(closed.get());
@@ -132,16 +177,75 @@ void teardown_restores() {
         auto h = backend->set_visible(id, false);
         REQUIRE(done(h));
         CHECK(h.get());
-        CHECK(!near(app_frame(app, "park"), frame));
+        CHECK(!near(app_frame(app, "park"), frame) || app_minimized(app, "park"));
     }
     CHECK(near(app_frame(app, "park"), frame));
-    CHECK_EQ(journal_parked_entries(), size_t(0));
+    CHECK(!app_minimized(app, "park"));
+    CHECK(journal_methods().empty());
+}
+
+// A window the backend parked stays tracked (and journaled) while another
+// Space is active, here a fullscreen window's, although the window server
+// and AXWindows then no longer list it as on screen; it is shown again
+// afterwards. A parked window its application closes is reported removed
+// and leaves the journal.
+void parked_window_facts() {
+    if (mac_permissions().screen_locked) {
+        std::printf("-- parked window across a Space switch: SKIP (screen locked)\n");
+        return;
+    }
+    std::printf("-- parked window across a Space switch, then closed\n");
+    TestApp app;
+    REQUIRE(app.start());
+    Rect frame{240, 220, 360, 240};
+    uint32_t parked_id = app.create("parked", frame, "C03080");
+    uint32_t fs_id = app.create("fs", Rect{700, 200, 300, 200}, "80C030");
+    REQUIRE(parked_id && fs_id);
+    std::string err;
+    auto backend = mac::ShellBackend::create(test_shell_config(app.pid()), &err);
+    REQUIRE(backend);
+    EventLog log(backend->events());
+    WindowId pid_ = add(log, parked_id);
+    REQUIRE(pid_);
+    auto h = backend->set_visible(pid_, false);
+    REQUIRE(done(h));
+    CHECK(h.get());
+    CHECK_EQ(journal_methods().size(), size_t(1));
+
+    uint32_t previous = frontmost_pid();
+    log.mark();
+    REQUIRE(app.ok("activate fs"));
+    std::string r = app.cmd("fullscreen fs", 8000);
+    CHECK_EQ(r, std::string("ok"));
+    if (r == "ok") {
+        log.settle(1500ms);  // long enough for the off-screen decision (an AX scan or two)
+        CHECK(log.collect<WindowRemoved>([&](const WindowRemoved& e) { return e.id == pid_; }).empty());
+        CHECK(backend->find(parked_id) == pid_);
+        CHECK_EQ(journal_methods().size(), size_t(1));
+        CHECK_EQ(app.cmd("unfullscreen fs", 8000), std::string("ok"));
+    }
+    auto shown = backend->set_visible(pid_, true);
+    REQUIRE(done(shown));
+    CHECK(shown.get());
+    CHECK(near(app_frame(app, "parked"), frame));
+    CHECK(journal_methods().empty());
+    if (previous && previous != uint32_t(app.pid())) app.ok("yield " + std::to_string(previous));
+
+    // Parked, then closed by its application.
+    auto h2 = backend->set_visible(pid_, false);
+    REQUIRE(done(h2));
+    CHECK(h2.get());
+    CHECK_EQ(journal_methods().size(), size_t(1));
+    log.mark();
+    REQUIRE(app.ok("close parked"));
+    CHECK(log.wait<WindowRemoved>([&](const WindowRemoved& e) { return e.id == pid_; }, 5000ms));
+    CHECK(eventually([] { return journal_methods().empty(); }));
 }
 
 // A hung application: every host call returns at once, the healthy
 // application's operations go ahead, the hung one's fail after its
-// messaging timeout, and teardown is bounded and leaves the hung window
-// journaled.
+// messaging timeout without forgetting that its window is parked, and
+// teardown is bounded and leaves the hung window journaled.
 void hung_application() {
     std::printf("-- hung application\n");
     TestApp healthy, hung;
@@ -176,9 +280,13 @@ void hung_application() {
     REQUIRE(done(place_healthy, 3000ms));
     CHECK(place_healthy.get());
     CHECK(near(app_frame(healthy, "healthy"), Rect{240, 240, 320, 220}));
-    // The hung application's operations fail after the messaging timeout.
+    // The hung application's operations fail after the messaging timeout,
+    // and the failed placement does not un-hide (un-journal) the window.
     CHECK(done(place_hung, 4000ms));
+    CHECK(!place_hung.get());
     CHECK(done(focus_hung, 4000ms));
+    CHECK(focus_hung.get() != FocusResult::Focused);
+    CHECK_EQ(journal_methods().size(), size_t(1));
 
     auto t1 = std::chrono::steady_clock::now();
     backend.reset();
@@ -188,7 +296,7 @@ void hung_application() {
     CHECK(teardown < 2800ms);
     // The hung window could not be put back: it stays journaled for the
     // next instance.
-    CHECK(eventually([] { return journal_parked_entries() == 1; }, 3000ms));
+    CHECK(eventually([] { return journal_methods().size() == 1; }, 3000ms));
     hung.kill_now();
 }
 
@@ -200,6 +308,7 @@ int main() {
     require_display();
     operations();
     teardown_restores();
+    parked_window_facts();
     hung_application();
     return finish("test_mac_ops");
 }

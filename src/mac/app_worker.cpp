@@ -1,5 +1,7 @@
 #include "mac/app_worker.h"
 
+#include "mac/system.h"
+
 #include <thread>
 
 namespace brocompositor::mac {
@@ -103,18 +105,17 @@ void AppWorker::drain() {
 
 void AppWorker::rescan() {
     AXError err = kAXErrorSuccess;
-    std::vector<ax::Element> list = ax::windows(ctx_.app.get(), &err);
+    std::vector<ax::Element> list = ax::windows(ctx_.app.get(), timeout_, &err);
     note(err);
+    sys::trace("pid %u rescan: AXWindows err %d, %zu windows", pid_, int(err), list.size());
     if (err != kAXErrorSuccess && err != kAXErrorNoValue) {
         // Unresponsive or refused: keep what was known.
-        if (!scanned_) changed_(pid_);
+        if (!scanned()) changed_(pid_);
         return;
     }
     std::map<uint32_t, ax::Element> elements;
     std::map<uint32_t, ax::WindowInfo> infos;
     for (ax::Element& w : list) {
-        // The timeout is per element: windows do not inherit the application's.
-        AXUIElementSetMessagingTimeout(w.get(), float(timeout_.count()) / 1000.0f);
         AXError e = kAXErrorSuccess;
         auto i = ax::info(w.get(), &e);
         if (ax::unresponsive(e)) {
@@ -122,31 +123,88 @@ void AppWorker::rescan() {
             return;
         }
         if (!i || i->cgid == 0) continue;
-        if (!subscribed_.count(i->cgid)) subscribe(w.get(), i->cgid);
+        sys::trace("  cgid %u '%s' %s min %d fs %d %d,%d %dx%d", i->cgid, i->title.c_str(), i->subrole.c_str(),
+                   i->minimized, i->fullscreen, i->frame.x, i->frame.y, i->frame.width, i->frame.height);
+        auto sub = subscribed_.find(i->cgid);
+        if (sub == subscribed_.end() || !CFEqual(sub->second.get(), w.get())) subscribe(w, i->cgid);
         elements.emplace(i->cgid, w);
         infos.emplace(i->cgid, *i);
     }
-    for (auto it = subscribed_.begin(); it != subscribed_.end();)
-        it = elements.count(*it) ? std::next(it) : subscribed_.erase(it);
+    // Windows AXWindows stopped listing: closed / ordered out (the element
+    // is invalid), or on a Space that is not active (it still answers).
+    for (auto& [cgid, element] : ctx_.windows) {
+        if (elements.count(cgid)) continue;
+        AXError e = ax::probe(element.get());
+        if (ax::unresponsive(e)) {
+            note(e);
+            return;
+        }
+        auto known = known_.find(cgid);
+        if (e != kAXErrorSuccess || known == known_.end()) continue;
+        ax::WindowInfo i = known->second;
+        if (auto fresh = ax::info(element.get(), nullptr)) i = *fresh;
+        i.cgid = cgid;
+        i.other_space = true;
+        sys::trace("  cgid %u on another Space", cgid);
+        elements.emplace(cgid, element);
+        infos.emplace(cgid, i);
+    }
+    for (auto it = subscribed_.begin(); it != subscribed_.end();) {
+        if (elements.count(it->first)) {
+            ++it;
+            continue;
+        }
+        unsubscribe(it->first);  // erases
+        it = subscribed_.lower_bound(it->first);
+    }
+    AXError fe = kAXErrorSuccess;
+    uint32_t focused = ax::focused_window(ctx_.app.get(), &fe);
+    if (ax::unresponsive(fe)) {
+        note(fe);
+        return;
+    }
+    focused_ = focused;
     ctx_.windows = std::move(elements);
+    known_ = infos;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         published_ = std::move(infos);
     }
-    scanned_ = true;
+    ++scans_;
     changed_(pid_);
 }
 
-void AppWorker::subscribe(AXUIElementRef window, uint32_t cgid) {
+void AppWorker::subscribe(const ax::Element& window, uint32_t cgid) {
     if (!observer_) return;
-    for (CFStringRef n : kWindowNotifications) AXObserverAddNotification(observer_.get(), window, n, this);
-    subscribed_.insert(cgid);
+    unsubscribe(cgid);
+    for (CFStringRef n : kWindowNotifications) {
+        AXError e = AXObserverAddNotification(observer_.get(), window.get(), n, this);
+        if (e != kAXErrorSuccess) sys::trace("pid %u cgid %u observe window notification: err %d", pid_, cgid, int(e));
+    }
+    subscribed_[cgid] = window;
+}
+
+void AppWorker::unsubscribe(uint32_t cgid) {
+    auto it = subscribed_.find(cgid);
+    if (it == subscribed_.end()) return;
+    // Fails harmlessly for an element that is already gone.
+    if (observer_)
+        for (CFStringRef n : kWindowNotifications) AXObserverRemoveNotification(observer_.get(), it->second.get(), n);
+    subscribed_.erase(it);
 }
 
 void AppWorker::on_notification(AXObserverRef, AXUIElementRef, CFStringRef notification, void* refcon) {
     auto* self = static_cast<AppWorker*>(refcon);
-    if (CFEqual(notification, kAXMovedNotification) || CFEqual(notification, kAXResizedNotification))
-        self->changed_(self->pid_);  // geometry comes from the window server's list
+    if (sys::tracing()) {
+        char name[128] = {};
+        CFStringGetCString(notification, name, sizeof(name), kCFStringEncodingUTF8);
+        sys::trace("pid %u notification %s", self->pid_, name);
+    }
+    // Geometry comes from the window server's list, so a move needs no AX
+    // reads (and drags send many). A resize may be a fullscreen transition
+    // (AXFullScreen), so it rescans, as everything else does.
+    if (CFEqual(notification, kAXMovedNotification))
+        self->changed_(self->pid_);
     else
         self->request_rescan();
 }
@@ -168,6 +226,7 @@ void AppWorker::run(std::shared_ptr<AppWorker> self) {
     }
 
     ctx_.pid = pid_;
+    ctx_.timeout = timeout_;
     ctx_.worker = this;
     ctx_.app = ax::application(pid_, timeout_);
     AXObserverRef obs = nullptr;
@@ -176,6 +235,7 @@ void AppWorker::run(std::shared_ptr<AppWorker> self) {
         CFRunLoopAddSource(rl, AXObserverGetRunLoopSource(obs), kCFRunLoopDefaultMode);
         for (CFStringRef n : kAppNotifications) {
             AXError e = AXObserverAddNotification(obs, ctx_.app.get(), n, this);
+            sys::trace("pid %u observe app notification: err %d", pid_, int(e));
             note(e);
             if (ax::unresponsive(e)) break;
         }
@@ -191,6 +251,8 @@ void AppWorker::run(std::shared_ptr<AppWorker> self) {
 
     if (observer_) CFRunLoopRemoveSource(rl, AXObserverGetRunLoopSource(observer_.get()), kCFRunLoopDefaultMode);
     observer_ = CFRef<AXObserverRef>();
+    subscribed_.clear();
+    known_.clear();
     ctx_ = Context{};
     {
         std::lock_guard<std::mutex> lock(mutex_);

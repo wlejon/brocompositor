@@ -37,6 +37,18 @@ uint32_t frontmost_pid();
 // Makes the application frontmost through Accessibility (needs the permission).
 void make_frontmost(uint32_t pid);
 
+// CoreGraphics' answers, for checking the backend against (kept here so the
+// tests need no Carbon header: its ::Rect clashes with brocompositor::Rect).
+Rect cg_display_bounds(uint32_t display);
+uint32_t cg_display_dpi(uint32_t display);  // 96 x pixels per point of the current mode
+uint32_t cg_main_display();
+bool menu_bar_autohides();
+// Switches `display` to another usable mode for this process only
+// (kCGConfigureForAppOnly) and returns its size in points and dpi; false
+// when there is none. cg_restore_modes() (and process exit) undo it.
+bool cg_switch_mode(uint32_t display, int32_t* width, int32_t* height, uint32_t* dpi);
+void cg_restore_modes();
+
 // A journal directory private to this test process (removed at exit).
 std::string test_journal_dir();
 brocompositor::mac::ShellConfig test_shell_config(pid_t pid);

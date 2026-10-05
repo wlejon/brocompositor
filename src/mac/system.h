@@ -22,8 +22,8 @@ struct Screen {
     uint32_t display_id = 0;  // CGDirectDisplayID
     std::string name;         // localized display name
     Rect frame;               // CGDisplayBounds
-    Rect visible;             // minus the menu bar and the Dock (NSScreen.visibleFrame)
-    double scale = 1.0;       // backingScaleFactor
+    Rect visible;             // minus the menu bar and the Dock (NSScreen.visibleFrame's insets)
+    double scale = 1.0;       // pixels per point of the current display mode
     bool primary = false;     // holds the menu bar origin (Quartz 0,0)
 };
 // The active displays. Empty while every display is asleep (the window
@@ -41,11 +41,17 @@ std::optional<App> app(uint32_t pid);
 uint32_t frontmost_pid();
 // The pid of Finder (the neutral focus target), 0 when not running.
 uint32_t finder_pid();
+// Asks the system to make the application frontmost (NSRunningApplication
+// activate). Measured on macOS 26: honoured from a background process, and
+// it activates Finder when Finder shows only the desktop, where AXFrontmost
+// reports success and changes nothing.
+bool activate(uint32_t pid);
 
 // Calls `changed` (on an AppKit notification queue) when an application
 // launches, terminates, activates, hides or unhides, or the display
 // configuration changes. Notifications need the process's main run loop to
-// be running; the backend's polling covers hosts where it is not.
+// be running (verified: without it none arrive, not even on an operation
+// queue); the backend's polling covers hosts where it is not.
 class WorkspaceWatch {
 public:
     static std::unique_ptr<WorkspaceWatch> start(std::function<void()> changed);
@@ -80,5 +86,11 @@ bool process_alive(uint32_t pid, uint64_t start);
 
 // The login session's screen is locked.
 bool screen_locked();
+
+// Diagnostic trace to stderr, on when the environment has
+// BROCOMPOSITOR_TRACE=1 (what the backend saw and decided; for debugging
+// against a real window server).
+bool tracing();
+void trace(const char* format, ...) __attribute__((format(printf, 1, 2)));
 
 }  // namespace brocompositor::mac::sys

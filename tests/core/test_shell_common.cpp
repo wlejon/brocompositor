@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <fstream>
 #include <future>
+#include <memory>
 #include <set>
 #include <thread>
 
@@ -70,6 +71,32 @@ void journal_files() {
         CHECK(j.write(s));  // empty state: the file goes away
         CHECK(!fs::exists(j.file()));
         CHECK(Journal(fs::path(), 1, 1).write(JournalState{}));  // disabled journal: no-op
+    }
+    {
+        // Several instances alive in one process get files of their own; a
+        // name frees up when its instance goes.
+        auto a = std::make_unique<Journal>(dir, 4242, 777);
+        Journal b(dir, 4242, 777);
+        CHECK(a->file() != b.file());
+        CHECK_EQ(a->file().filename().string(), std::string("4242-777.journal"));
+        CHECK_EQ(b.file().filename().string(), std::string("4242-777-2.journal"));
+        JournalState s;
+        s.reservations = {9};
+        CHECK(b.write(s));
+        // A dead owner's second-instance journal is claimed like any other,
+        // and remembers its name for a hand-back.
+        auto stale = Journal::claim_stale(dir, [](uint32_t, uint64_t) { return false; }, 999);
+        CHECK_EQ(stale.size(), size_t(1));
+        if (!stale.empty()) {
+            CHECK_EQ(stale[0].pid, uint32_t(4242));
+            CHECK_EQ(stale[0].pid_start, uint64_t(777));
+            CHECK_EQ(stale[0].name, std::string("4242-777-2.journal"));
+            Journal::discard(stale[0]);
+        }
+        a.reset();
+        Journal c(dir, 4242, 777);
+        CHECK_EQ(c.file().filename().string(), std::string("4242-777.journal"));
+        CHECK_EQ(files_in(dir), size_t(0));
     }
 
     // Owners: 100 alive (start 5), 200 dead, 300's pid reused (start differs).

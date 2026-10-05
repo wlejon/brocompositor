@@ -9,34 +9,57 @@
 //     needs no permission: every normal-layer, on-screen window of a regular
 //     application, front to back, with its owner pid and frame. It is
 //     polled on the backend's own thread (ShellConfig::poll_interval) and
-//     re-read at once when an application launches, quits or activates, or
-//     (with Accessibility) when an application reports a window created,
-//     moved, resized, retitled, minimized or destroyed.
+//     re-read at once when (with Accessibility) an application reports a
+//     window created, moved, resized, retitled, minimized or destroyed, or
+//     (in a process running its main run loop) when an application
+//     launches, quits or activates. With Accessibility a window is reported
+//     only once its application's AX facts are in (titles, subrole,
+//     minimized, fullscreen; a new application's first windows wait up to
+//     2 x ax_timeout for them), and only standard windows, dialogs and
+//     titled or closable windows of unknown subrole (AppKit's own helper
+//     windows, such as the one animating a fullscreen transition, are not).
+//   * A window the window server stops showing is, with Accessibility:
+//     minimized (kept, minimized = true); fullscreen in its own Space while
+//     another Space is active (kept); on another Space or of a hidden
+//     application (removed after 1 s, unless this backend hid it, like a
+//     cloaked window on Windows; it comes back as a new window); closed or
+//     ordered out (removed). Without Accessibility it is removed at once.
 //   * Window operations need the Accessibility permission (AX). Each
 //     application gets its own worker thread with its own run loop and AX
 //     observer; every AX call into an application runs there with a
 //     messaging timeout (ShellConfig::ax_timeout), so a hung application
 //     stalls its own worker and nothing else. Nothing the host calls blocks
 //     on another process.
-//   * Workspaces are emulated: a hidden window is parked so that all but
-//     one point of it lies beyond the bottom-right corner of the display
-//     union (macOS refuses positions entirely off-screen; the window server
-//     keeps one row of the title bar reachable). The backend reads back
-//     where the application really put the window and falls back to
-//     minimizing when parking left more than a sliver visible.
+//   * Workspaces are emulated: a hidden window is parked off a bottom
+//     corner of a display. macOS does not allow a window entirely off the
+//     displays (measured on macOS 26: a position leaving any part of the
+//     window on a display is kept horizontally, one beyond them is pulled
+//     back to leave 40 pt; vertically the title bar is kept inside the
+//     display's visible frame), so a parked window keeps a 1 pt column on
+//     screen from its title bar down to the display's bottom edge (1 x 91 pt
+//     on a 1496 x 967 point display with a bottom Dock). The backend tries
+//     each display's bottom corners, reads back where the window really
+//     went, and falls back to minimizing when more than 64 x 64 pt stayed
+//     visible. A parked window stays parked (and journaled) across Space
+//     switches.
 //   * Edge reservations are virtual: macOS has no appbar protocol, so a
 //     reservation shrinks the work area this backend reports (the host's
 //     layout honours it) without changing what other applications see as
 //     the screen's visible frame. The menu bar and Dock are always excluded
-//     from the reported work area (NSScreen.visibleFrame).
-//   * Focus is tracked from the frontmost application and the front-most
-//     window of it in the window server's order (no permission needed);
-//     focusing a window raises it and makes its application frontmost (AX).
+//     from the reported work area. Displays, their bounds and scale come
+//     from CoreGraphics on every pass (NSScreen keeps a stale configuration
+//     in a process that does not run NSApplication's event loop); only the
+//     menu-bar / Dock insets come from NSScreen.visibleFrame.
+//   * Focus is the frontmost application's key window (AXFocusedWindow;
+//     without Accessibility its front-most window in the window server's
+//     order). Focusing a window makes its application frontmost (AX, or
+//     NSRunningApplication where AX reports success and changes nothing, as
+//     for Finder showing only the desktop) and raises it.
 //   * There are no move/size-started events (macOS reports no interactive
 //     move loop to other processes).
 //
 // Coordinates are Quartz global display points (see geometry.h); a window's
-// dpi is its display's 96 x backingScaleFactor.
+// dpi is its display's 96 x pixels per point of its current mode.
 //
 // Lifetime and recovery mirror the Windows backend: the destructor puts back
 // every window this backend parked or minimized (waiting at most
@@ -75,11 +98,13 @@ struct Permissions {
     // The login session's screen is locked (or the display asleep with the
     // lock engaged): focus cannot change and capture delivers no frames.
     bool screen_locked = false;
-    // The process macOS checks those grants against (the "responsible"
-    // process: the app bundle or terminal that launched this one, e.g.
-    // /usr/libexec/sshd-session for a program started over ssh).
+    // The binary macOS checks those grants against: the subject tccd
+    // attributes this process to (the app bundle or terminal that launched
+    // it; for a program started over ssh /usr/libexec/sshd-keygen-wrapper,
+    // launchd's ssh Program, although the connection's process runs
+    // /usr/libexec/sshd-session). Grant the permissions to this path.
     std::string responsible_path;
-    uint32_t responsible_pid = 0;
+    uint32_t responsible_pid = 0;  // the responsible process
 };
 Permissions query_permissions();
 
@@ -127,9 +152,8 @@ public:
     ShellBackend& operator=(const ShellBackend&) = delete;
 
     EventQueue& events();
-    // Permissions as of create() (they change only when the user acts, and
-    // macOS applies an Accessibility grant to a running process at once but
-    // a Screen Recording grant only after a restart).
+    // Permissions as of create() (they change only when the user acts; a
+    // process started after a grant sees it, one already running may not).
     const Permissions& permissions() const;
 
     // Queues one core command; false only when the window is unknown.
@@ -147,7 +171,8 @@ public:
     Completion<bool> close(WindowId id);
 
     // From the window server's list (fresh), never blocking on the window's
-    // application.
+    // application. The list trails a change by a few frames; an operation
+    // completes only once its result shows here (or after 300 ms).
     std::optional<WindowSnapshot> query(WindowId id) const;
     std::vector<MonitorSnapshot> monitors() const;
     uint64_t native_handle(WindowId id) const;  // CGWindowID

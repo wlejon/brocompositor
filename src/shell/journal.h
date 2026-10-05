@@ -45,6 +45,7 @@ struct JournalState {
 
 struct StaleJournal {
     std::filesystem::path file;  // the claimed file (delete it with discard())
+    std::string name;            // its name before it was claimed (to hand it back under)
     uint32_t pid = 0;
     uint64_t pid_start = 0;
     JournalState state;
@@ -52,9 +53,13 @@ struct StaleJournal {
 
 class Journal {
 public:
-    // An empty `dir` disables journaling (writes are no-ops).
+    // An empty `dir` disables journaling (writes are no-ops). The file is
+    // <pid>-<start>.journal, or <pid>-<start>-<n>.journal for the n-th
+    // instance alive at once in one process (several backends).
     Journal(std::filesystem::path dir, uint32_t pid, uint64_t pid_start);
-    ~Journal() = default;
+    ~Journal();
+    Journal(const Journal&) = delete;
+    Journal& operator=(const Journal&) = delete;
 
     // Atomically replaces this instance's journal; an empty state removes it.
     bool write(const JournalState& state);

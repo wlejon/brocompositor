@@ -113,7 +113,9 @@ void scripted(Host& host) {
     REQUIRE(!um.empty());
     CHECK_EQ(um.back().rect, (Rect{700, 500, 80, 60}));
     CHECK_EQ(um.back().process_id, uint32_t(d->pid()));
-    CHECK(!host.server_events_of<UnmanagedSurfaceAdded>().empty());
+    // The event reaches the host through its event queue, after the server's
+    // mirror (which the list above reads) already has the surface.
+    CHECK(host.wait([&] { return !host.server_events_of<UnmanagedSurfaceAdded>().empty(); }));
     CHECK(host.wait([&] { return fresh_pixel(host, 720, 520) == 0xFFE0E000u; }));
 
     // WM_DELETE_WINDOW.

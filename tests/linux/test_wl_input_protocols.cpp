@@ -55,7 +55,7 @@ void touch(Host& host) {
     s.inject_touch_frame();
     CHECK(c->wait_line("tup 0", 5000));
     CHECK(c->wait_line("tup 1", 5000));
-    CHECK(!host.server_events_of<TouchDown>().empty());
+    CHECK(host.wait([&] { return !host.server_events_of<TouchDown>().empty(); }));
     // A touch outside every surface goes nowhere.
     s.inject_touch_down(2, 1000, 1000);
     s.inject_touch_up(2);
@@ -89,7 +89,7 @@ void tablet(Host& host) {
     s.inject_tablet_pad_button(2, false);
     s.inject_tablet_proximity(f.x + 50, f.y + 60, false);
     CHECK(c->wait_line("tool_out", 5000));
-    CHECK(!host.server_events_of<TabletToolProximity>().empty());
+    CHECK(host.wait([&] { return !host.server_events_of<TabletToolProximity>().empty(); }));
 }
 
 void constraints(Host& host) {

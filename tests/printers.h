@@ -18,6 +18,28 @@ inline std::ostream& operator<<(std::ostream& os, const Size& s) { return os << 
 
 }  // namespace brocompositor
 
+#ifdef __linux__
+#include "brocompositor/linux/server_events.h"
+
+namespace brocompositor::wl {
+
+inline std::ostream& operator<<(std::ostream& os, LockState s) {
+    switch (s) {
+        case LockState::Unlocked: return os << "Unlocked";
+        case LockState::Locked: return os << "Locked";
+        case LockState::Abandoned: return os << "Abandoned";
+    }
+    return os << "LockState(" << uint32_t(s) << ")";
+}
+
+inline std::ostream& operator<<(std::ostream& os, PointerConstraintKind k) {
+    return os << (k == PointerConstraintKind::Locked ? "Locked" : k == PointerConstraintKind::Confined ? "Confined"
+                                                                                                         : "None");
+}
+
+}  // namespace brocompositor::wl
+#endif
+
 namespace std {
 
 template <class T>

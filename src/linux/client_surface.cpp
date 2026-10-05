@@ -38,9 +38,9 @@ SharedImage describe_dmabuf(const wlr_dmabuf_attributes& a, std::vector<int>* fd
 
 uint64_t next_image_id() { return g_image_id.fetch_add(1); }
 
-ClientSurfaceImpl::ClientSurfaceImpl(Server* server, std::shared_ptr<Dispatcher> dispatcher, SurfaceId id,
-                                     wlr_surface* surface)
-    : server_(server), dispatcher_(std::move(dispatcher)), id_(id), surface_(surface) {}
+ClientSurfaceImpl::ClientSurfaceImpl(Server* server, std::shared_ptr<Dispatcher> dispatcher,
+                                     std::shared_ptr<LockGate> gate, SurfaceId id, wlr_surface* surface)
+    : server_(server), dispatcher_(std::move(dispatcher)), gate_(std::move(gate)), id_(id), surface_(surface) {}
 
 ClientSurfaceImpl::~ClientSurfaceImpl() {
     for (auto& [id, img] : images_)
@@ -53,6 +53,9 @@ ClientSurfaceImpl::~ClientSurfaceImpl() {
 // ---------------------------------------------------------------- host side
 
 std::optional<Frame> ClientSurfaceImpl::acquire() {
+    // The session lock withholds every surface but the lock surfaces, even
+    // from hosts that kept a ClientSurface from before the lock.
+    if (gate_ && !gate_->allows(id_)) return std::nullopt;
     std::lock_guard<std::mutex> lock(m_);
     if (!has_current_ || frames_.empty()) return std::nullopt;
     FrameRec& cur = frames_.back();

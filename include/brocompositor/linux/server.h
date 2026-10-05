@@ -64,6 +64,23 @@ enum class OutputBufferKind : uint32_t {
     DmaBuf = 2,  // GBM / dumb dmabufs on the backend's DRM device
 };
 
+// XWayland: X11 clients become windows of the same model (WindowAdded with
+// app_id = WM_CLASS class, owner = WM_TRANSIENT_FOR, process_id =
+// _NET_WM_PID), override-redirect windows become unmanaged surfaces, X
+// selections are bridged to the clipboard and primary selection, and X
+// surfaces are ClientSurfaces like any other.
+//
+// HiDPI: X11 has no per-window scale. X windows live in layout coordinates
+// 1:1 (an X pixel is one logical pixel) and their buffers have scale 1, so
+// on an output with scale > 1 the host scales them up like any scale-1
+// surface: correct size and position, soft rather than sharp. Toolkits that
+// scale themselves (GDK_SCALE, QT_SCALE_FACTOR) are the user's choice.
+enum class XwaylandMode : uint32_t {
+    Off = 0,
+    Lazy = 1,   // DISPLAY is reserved at startup, Xwayland starts on the first X11 connection
+    Eager = 2,  // Xwayland starts with the server
+};
+
 struct DmabufFormat {
     uint32_t fourcc = 0;              // DRM_FORMAT_*
     std::vector<uint64_t> modifiers;  // DRM_FORMAT_MOD_*
@@ -98,6 +115,19 @@ struct ServerConfig {
     int32_t repeat_rate = 25, repeat_delay = 600;
 
     bool prefer_server_side_decorations = true;  // xdg-decoration preference
+
+    XwaylandMode xwayland = XwaylandMode::Lazy;
+
+    // Screen capture (wlr-screencopy, ext-image-copy-capture): the server
+    // copies output images into shm client buffers itself when both are
+    // CPU-mappable; anything else is a CaptureRequest for the host. true
+    // sends every copy to the host.
+    bool host_capture_copies = false;
+
+    // Gamma ramp size offered for outputs without a hardware LUT (headless,
+    // nested); their ramps reach the host in GammaChanged. 0: such outputs
+    // refuse gamma control.
+    uint32_t host_gamma_size = 256;
     // Log level for wlroots (0 silent, 1 error, 2 info, 3 debug); overridden
     // by BROCOMPOSITOR_WLR_LOG.
     int wlr_log_level = 1;
@@ -136,7 +166,10 @@ struct SurfaceHit {
 
 struct PresentRequest {
     uint64_t image_id = 0;
-    std::vector<Rect> damage;              // output pixels; empty: everything
+    // Output pixels that changed. Empty: everything; only empty rects (e.g.
+    // {Rect{}}): nothing changed (capture clients waiting for damage keep
+    // waiting; frame callbacks are still sent).
+    std::vector<Rect> damage;
     NativeHandle render_done = kNoFd;      // sync_file the server waits on (ownership passes)
     std::vector<SurfaceId> surfaces;       // drawn this frame: frame callbacks + feedback
 };
@@ -184,8 +217,17 @@ public:
     // border around the frame (WindowChanged with change::State on change).
     bool server_side_decoration(WindowId id) const;
     bool set_window_state(WindowId id, bool maximized, bool fullscreen);
+    // Tells the client (and taskbars) that the window is minimized; hiding it
+    // is still set_visible().
+    bool set_window_minimized(WindowId id, bool minimized);
     std::vector<SurfaceNode> window_surfaces(WindowId id) const;
     std::optional<SurfaceHit> hit_test(WindowId id, double wx, double wy) const;  // frame-relative
+
+    // ---- XWayland ----
+    // DISPLAY for X11 clients ("" when XWayland is off or failed).
+    std::string xwayland_display() const;
+    // Mapped override-redirect X windows, bottom to top.
+    std::vector<UnmanagedSurfaceInfo> unmanaged_surfaces() const;
 
     // ---- layer shell ----
     std::vector<LayerSurfaceInfo> layer_surfaces() const;
@@ -232,6 +274,43 @@ public:
     void warp_cursor(double x, double y);
     std::pair<double, double> cursor_position() const;
 
+    // Touch: a down picks the point's surface for its whole life (surface-
+    // local coordinates; kNoSurface drops the point).
+    void touch_down(SurfaceId surface, int32_t id, double sx, double sy, uint32_t time_msec);
+    void touch_motion(int32_t id, double sx, double sy, uint32_t time_msec);
+    void touch_up(int32_t id, uint32_t time_msec);
+    void touch_cancel();
+    void touch_frame();
+
+    // Tablets (tablet-unstable-v2): the tool enters `surface` (kNoSurface:
+    // proximity out) and moves to surface-local (sx, sy), with axes.
+    void tablet_tool_route(TabletToolId tool, SurfaceId surface, double sx, double sy, const TabletToolAxes& axes);
+    void tablet_tool_tip(TabletToolId tool, bool down);
+    void tablet_tool_button(TabletToolId tool, uint32_t button, bool pressed);
+    // Pads deliver to the keyboard-focused surface.
+    void tablet_pad_button(TabletPadId pad, uint32_t time_msec, uint32_t button, bool pressed);
+    void tablet_pad_ring(TabletPadId pad, uint32_t time_msec, uint32_t ring, double position, bool finger);
+    void tablet_pad_strip(TabletPadId pad, uint32_t time_msec, uint32_t strip, double position, bool finger);
+
+    // Host-generated user activity (resets ext-idle-notify timers; device
+    // input does this by itself).
+    void notify_activity();
+    bool idle_inhibited() const;
+
+    // ---- session lock (ext-session-lock-v1) ----
+    // There is deliberately no host-side unlock: only the lock client does.
+    LockState session_lock_state() const;
+    std::vector<SurfaceNode> lock_surface_tree(MonitorId output) const;  // relative to the output origin
+    std::optional<SurfaceHit> hit_test_lock(MonitorId output, double ox, double oy) const;
+
+    // ---- screen capture ----
+    // Answers a CaptureRequest (render_done: sync_file the server waits on
+    // before telling the client, ownership passes).
+    void capture_done(uint64_t request_id, bool ok, NativeHandle render_done = kNoFd);
+
+    // ---- gamma ----
+    std::optional<GammaChanged> gamma(MonitorId output) const;
+
     // ---- input: virtual devices (tests, remote input) ----
     // They feed the same path as real devices (server_events()).
     void inject_key(uint32_t keycode, bool pressed);
@@ -239,6 +318,17 @@ public:
     void inject_pointer_warp(double x, double y);
     void inject_pointer_button(uint32_t button, bool pressed);
     void inject_pointer_axis(uint32_t orientation, double delta, int32_t discrete);  // discrete: value120
+    // Virtual touchscreen spanning the layout (x, y in layout space).
+    void inject_touch_down(int32_t id, double x, double y);
+    void inject_touch_motion(int32_t id, double x, double y);
+    void inject_touch_up(int32_t id);
+    void inject_touch_frame();
+    // Virtual tablet (pen tool + a 4-button pad), created on first use.
+    void inject_tablet_proximity(double x, double y, bool in);
+    void inject_tablet_motion(double x, double y, double pressure);
+    void inject_tablet_tip(bool down);
+    void inject_tablet_button(uint32_t button, bool pressed);
+    void inject_tablet_pad_button(uint32_t button, bool pressed);
 
     struct Impl;
 

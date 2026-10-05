@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- From wlroots 0.18.2 protocol/ (descriptions shortened; interfaces unchanged). -->
+<protocol name="wlr_screencopy_unstable_v1">
+  <copyright>
+    Copyright © 2018 Simon Ser
+    Copyright © 2019 Andri Yngvason
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="screen content capturing on client buffers">
+    This protocol allows clients to ask the compositor to copy part of the
+    screen content to a client buffer.
+  </description>
+
+  <interface name="zwlr_screencopy_manager_v1" version="3">
+    <description summary="manager to inform clients and begin capturing"/>
+
+    <request name="capture_output">
+      <description summary="capture an output">
+        Capture the next frame of an entire output.
+      </description>
+      <arg name="frame" type="new_id" interface="zwlr_screencopy_frame_v1"/>
+      <arg name="overlay_cursor" type="int"
+        summary="composite cursor onto the frame"/>
+      <arg name="output" type="object" interface="wl_output"/>
+    </request>
+
+    <request name="capture_output_region">
+      <description summary="capture an output's region">
+        Capture the next frame of an output's region, given in output logical
+        coordinates and clipped to the output's extents.
+      </description>
+      <arg name="frame" type="new_id" interface="zwlr_screencopy_frame_v1"/>
+      <arg name="overlay_cursor" type="int"
+        summary="composite cursor onto the frame"/>
+      <arg name="output" type="object" interface="wl_output"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager"/>
+    </request>
+  </interface>
+
+  <interface name="zwlr_screencopy_frame_v1" version="3">
+    <description summary="a frame ready for copy">
+      Buffer events describe the supported buffer types, then buffer_done.
+      After copy, flags + ready, or failed.
+    </description>
+
+    <event name="buffer">
+      <description summary="wl_shm buffer information"/>
+      <arg name="format" type="uint" enum="wl_shm.format" summary="buffer format"/>
+      <arg name="width" type="uint" summary="buffer width"/>
+      <arg name="height" type="uint" summary="buffer height"/>
+      <arg name="stride" type="uint" summary="buffer stride"/>
+    </event>
+
+    <request name="copy">
+      <description summary="copy the frame"/>
+      <arg name="buffer" type="object" interface="wl_buffer"/>
+    </request>
+
+    <enum name="error">
+      <entry name="already_used" value="0"
+        summary="the object has already been used to copy a wl_buffer"/>
+      <entry name="invalid_buffer" value="1"
+        summary="buffer attributes are invalid"/>
+    </enum>
+
+    <enum name="flags" bitfield="true">
+      <entry name="y_invert" value="1" summary="contents are y-inverted"/>
+    </enum>
+
+    <event name="flags">
+      <description summary="frame flags"/>
+      <arg name="flags" type="uint" enum="flags" summary="frame flags"/>
+    </event>
+
+    <event name="ready">
+      <description summary="indicates frame is available for reading"/>
+      <arg name="tv_sec_hi" type="uint"
+           summary="high 32 bits of the seconds part of the timestamp"/>
+      <arg name="tv_sec_lo" type="uint"
+           summary="low 32 bits of the seconds part of the timestamp"/>
+      <arg name="tv_nsec" type="uint"
+           summary="nanoseconds part of the timestamp"/>
+    </event>
+
+    <event name="failed">
+      <description summary="frame copy failed"/>
+    </event>
+
+    <request name="destroy" type="destructor">
+      <description summary="delete this object, used or not"/>
+    </request>
+
+    <!-- Version 2 additions -->
+    <request name="copy_with_damage" since="2">
+      <description summary="copy the frame when it's damaged"/>
+      <arg name="buffer" type="object" interface="wl_buffer"/>
+    </request>
+
+    <event name="damage" since="2">
+      <description summary="carries the coordinates of the damaged region"/>
+      <arg name="x" type="uint" summary="damaged x coordinates"/>
+      <arg name="y" type="uint" summary="damaged y coordinates"/>
+      <arg name="width" type="uint" summary="current width"/>
+      <arg name="height" type="uint" summary="current height"/>
+    </event>
+
+    <!-- Version 3 additions -->
+    <event name="linux_dmabuf" since="3">
+      <description summary="linux-dmabuf buffer information"/>
+      <arg name="format" type="uint" summary="fourcc pixel format"/>
+      <arg name="width" type="uint" summary="buffer width"/>
+      <arg name="height" type="uint" summary="buffer height"/>
+    </event>
+
+    <event name="buffer_done" since="3">
+      <description summary="all buffer types reported"/>
+    </event>
+  </interface>
+</protocol>

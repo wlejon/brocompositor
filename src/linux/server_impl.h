@@ -5,6 +5,7 @@
 #pragma once
 
 #include "brocompositor/linux/server.h"
+#include "linux/desktop_records.h"
 #include "linux/dispatcher.h"
 #include "linux/wlr.h"
 
@@ -53,6 +54,9 @@ struct ToplevelRec {
     std::set<wlr_output*> entered;
     wlr_xdg_toplevel_decoration_v1* decoration = nullptr;
     bool ssd = false;  // negotiated server-side decoration: the host draws the frame
+    bool activated = false;
+    bool minimized = false;
+    std::unique_ptr<ForeignHandles> foreign;
     Listener map, unmap, commit, destroy;
     Listener req_move, req_resize, req_maximize, req_fullscreen, req_minimize, req_menu;
     Listener set_title, set_app_id, set_parent;
@@ -104,6 +108,9 @@ struct OutputRec {
     bool use_shm = false;         // fell back to shm images
     uint64_t pending_image = 0;   // committed, waiting for present
     std::map<uint32_t, uint64_t> inflight;  // commit_seq -> image id
+    uint64_t front_image = 0;     // last successfully committed image
+    std::vector<PresentWaiter> present_waiters;
+    GammaState gamma;
     Listener frame, present, destroy, request_state, commit;
 };
 
@@ -113,10 +120,11 @@ struct KeyboardRec {
     Server* srv = nullptr;
     wlr_keyboard* keyboard = nullptr;
     bool is_virtual = false;
+    wl_client* owner = nullptr;  // virtual-keyboard-v1 client (IME loop detection)
     // Mirrors the device's xkb state one key ahead, so a KeyboardKey event
     // can carry the modifier state that follows it.
     xkb_state* shadow = nullptr;
-    Listener key, destroy;
+    Listener key, destroy, keymap;
     ~KeyboardRec() {
         if (shadow) xkb_state_unref(shadow);
     }
@@ -125,7 +133,25 @@ struct KeyboardRec {
 struct PointerRec {
     Server* srv = nullptr;
     wlr_pointer* pointer = nullptr;
+    wlr_output* mapped_output = nullptr;  // absolute motion maps onto this output (else the layout)
     Listener motion, motion_abs, button, axis, frame, destroy;
+};
+
+// A window of either shell: an xdg_toplevel or a managed X11 window.
+struct WindowRef {
+    ToplevelRec* xdg = nullptr;
+    XwaylandRec* x = nullptr;
+    explicit operator bool() const { return xdg || x; }
+    bool operator==(const WindowRef&) const = default;
+};
+
+// The tree a surface belongs to.
+struct RootRef {
+    ToplevelRec* top = nullptr;
+    LayerRec* layer = nullptr;
+    XwaylandRec* x = nullptr;  // managed window or unmanaged surface
+    LockSurfaceRec* lock = nullptr;
+    WindowId window() const;
 };
 
 // ---------------------------------------------------------------- host mirror
@@ -161,6 +187,12 @@ struct Mirror {
     std::vector<MonitorSnapshot> monitors;
     CursorChanged cursor{kNoSurface, {}, "default", false};
     double cursor_x = 0, cursor_y = 0;
+    std::vector<UnmanagedSurfaceInfo> unmanaged;  // mapped, bottom to top
+    std::string xwayland_display;
+    LockState lock_state = LockState::Unlocked;
+    std::map<MonitorId, std::vector<SurfaceNode>> lock_trees;
+    std::map<MonitorId, GammaChanged> gamma;
+    bool idle_inhibited = false;
 };
 
 // ---------------------------------------------------------------- server
@@ -238,6 +270,88 @@ struct Server {
     wl_event_source* tree_idle = nullptr;
     bool outputs_dirty = false;
     wl_event_source* outputs_idle = nullptr;
+    std::unordered_map<SurfaceId, wlr_surface*> surface_ids;
+
+    // ---- XWayland (xwayland.cpp) ----
+#ifdef BC_HAVE_XWAYLAND
+    wlr_xwayland* xwayland = nullptr;
+    std::unordered_map<wlr_xwayland_surface*, std::unique_ptr<XwaylandRec>> xsurfaces;
+#endif
+    Listener xwl_ready, xwl_new_surface;
+    UnmanagedId next_unmanaged = 1;
+    std::vector<XwaylandRec*> unmanaged_order;  // mapped override-redirect, bottom to top
+
+    // ---- taskbars (foreign_toplevel.cpp) ----
+    wlr_foreign_toplevel_manager_v1* foreign_manager = nullptr;
+    wlr_ext_foreign_toplevel_list_v1* foreign_list = nullptr;
+
+    // ---- touch / tablets (touch_tablet.cpp) ----
+    wlr_tablet_manager_v2* tablet_manager = nullptr;
+    std::list<std::unique_ptr<TouchRec>> touches;
+    std::list<std::unique_ptr<TabletRec>> tablets;
+    std::map<wlr_tablet_tool*, std::unique_ptr<TabletToolRec>> tablet_tools;
+    std::list<std::unique_ptr<TabletPadRec>> pads;
+    wlr_touch* vtouch = nullptr;
+    wlr_tablet* vtablet = nullptr;
+    wlr_tablet_tool* vtool = nullptr;
+    wlr_tablet_pad* vpad = nullptr;
+    TabletToolId next_tool = 1;
+    TabletPadId next_pad = 1;
+    double vtool_x = 0, vtool_y = 0;
+
+    // ---- pointer / keyboard extras (pointer_extras.cpp) ----
+    wlr_pointer_constraints_v1* pointer_constraints = nullptr;
+    wlr_relative_pointer_manager_v1* relative_pointer = nullptr;
+    wlr_virtual_keyboard_manager_v1* virtual_keyboard = nullptr;
+    wlr_virtual_pointer_manager_v1* virtual_pointer = nullptr;
+    wlr_keyboard_shortcuts_inhibit_manager_v1* shortcuts_inhibit = nullptr;
+    std::map<wlr_pointer_constraint_v1*, std::unique_ptr<ConstraintRec>> constraints;
+    wlr_pointer_constraint_v1* active_constraint = nullptr;
+    std::map<wlr_keyboard_shortcuts_inhibitor_v1*, std::unique_ptr<ShortcutsInhibitorRec>> inhibitors;
+    wlr_keyboard_shortcuts_inhibitor_v1* active_inhibitor = nullptr;
+    double pointer_origin_x = 0, pointer_origin_y = 0;  // layout origin of the pointer-focused surface
+    Listener new_constraint, new_virtual_keyboard, new_virtual_pointer, new_shortcuts_inhibitor;
+
+    // ---- idle (idle.cpp) ----
+    wlr_idle_notifier_v1* idle_notifier = nullptr;
+    wlr_idle_inhibit_manager_v1* idle_inhibit = nullptr;
+    std::map<wlr_idle_inhibitor_v1*, std::unique_ptr<IdleInhibitorRec>> idle_inhibitors;
+    bool idle_inhibited = false;
+    wl_event_source* idle_check = nullptr;
+    Listener new_idle_inhibitor;
+
+    // ---- text input (text_input.cpp) ----
+    wlr_text_input_manager_v3* text_input_manager = nullptr;
+    wlr_input_method_manager_v2* input_method_manager = nullptr;
+    wlr_input_method_v2* input_method = nullptr;
+    std::map<wlr_text_input_v3*, std::unique_ptr<TextInputRec>> text_inputs;
+    std::map<wlr_input_popup_surface_v2*, std::unique_ptr<InputPopupRec>> input_popups;
+    wlr_surface* text_focus = nullptr;
+    Listener new_text_input, new_input_method, im_commit, im_new_popup, im_grab_keyboard, im_destroy,
+        im_grab_destroy;
+
+    // ---- session lock (session_lock.cpp) ----
+    wlr_session_lock_manager_v1* lock_manager = nullptr;
+    wlr_session_lock_v1* lock = nullptr;  // the live lock client's lock (null when abandoned)
+    LockState lock_state = LockState::Unlocked;
+    std::shared_ptr<LockGate> lock_gate = std::make_shared<LockGate>();
+    std::map<wlr_session_lock_surface_v1*, std::unique_ptr<LockSurfaceRec>> lock_surfaces;
+    std::set<MonitorId> lock_waiting;  // outputs that have not presented since the lock
+    wl_event_source* grab_end_idle = nullptr;  // ends a seat grab begun while locked
+    Listener new_lock, lock_new_surface, lock_unlock, lock_destroy, pointer_grab_begin, keyboard_grab_begin,
+        touch_grab_begin;
+
+    // ---- capture (capture.cpp, screencopy.cpp, image_copy_capture.cpp) ----
+    std::map<uint64_t, std::unique_ptr<CaptureJob>> captures;
+    uint64_t next_capture = 1;
+    std::vector<std::pair<WindowId, std::function<bool()>>> window_commit_waiters;
+    wl_global* screencopy_global = nullptr;
+    wl_global* image_copy_global = nullptr;
+    wl_global* output_source_global = nullptr;
+    wl_global* toplevel_source_global = nullptr;
+
+    // ---- gamma (gamma.cpp) ----
+    wl_global* gamma_global = nullptr;
 
     // ---- setup.cpp ----
     bool init(std::string* error);
@@ -253,8 +367,11 @@ struct Server {
     void mark_tree_dirty(wlr_surface* surface);
     void mark_all_trees_dirty();
     void refresh_trees();
-    // Root of the tree a surface belongs to: a toplevel or a layer surface.
-    void resolve_root(wlr_surface* surface, ToplevelRec** top, LayerRec** layer);
+    // Root of the tree a surface belongs to (toplevel, layer surface, X11
+    // window / unmanaged surface, lock surface). xdg / input-method popups
+    // resolve to their parent's tree.
+    RootRef resolve_root(wlr_surface* surface);
+    wlr_surface* surface_by_id(SurfaceId id);
     std::vector<SurfaceNode> build_tree(wlr_surface* root, Point origin_offset, wlr_xdg_surface* xdg_root,
                                         wlr_layer_surface_v1* layer_root);
     void send_frame_done(wlr_surface* surface, int64_t timestamp_ns);
@@ -269,11 +386,26 @@ struct Server {
     WindowSnapshot snapshot(ToplevelRec& t);
     void publish_window(ToplevelRec& t, uint32_t changes);
     void update_window_outputs(ToplevelRec& t);
+    bool place_xdg(ToplevelRec& t, const Rect& frame);
+    void set_xdg_visible(ToplevelRec& t, bool visible);
+    Point root_origin(ToplevelRec& t);  // layout position of the root surface's origin
+
+    // ---- windows.cpp: either shell ----
+    WindowRef window_ref(WindowId id);
+    wlr_surface* window_surface(WindowRef w);
     bool place_window(WindowId id, const Rect& frame);
     bool set_window_visible(WindowId id, bool visible);
     bool close_window(WindowId id);
     bool set_window_state(WindowId id, bool maximized, bool fullscreen);
-    Point root_origin(ToplevelRec& t);  // layout position of the root surface's origin
+    bool set_window_minimized(WindowId id, bool minimized);
+    void set_window_activated(WindowRef w, bool activated);
+    // Where a new window of geometry `g` opens: centred in the work area of
+    // the output under the cursor (or on its parent), shrunk to fit the work
+    // area when larger (never below `min`). Returns the frame to use.
+    Rect initial_frame(Size g, WindowId parent, Size min);
+    std::optional<SurfaceHit> hit_test_window(WindowId id, double wx, double wy);
+    void update_all_window_outputs();
+    void push_window_request(WindowId id, WindowRequestKind kind, bool foreign);
 
     // ---- layers.cpp ----
     void on_new_layer_surface(wlr_layer_surface_v1* layer);
@@ -330,6 +462,103 @@ struct Server {
 
     // ---- selection.cpp ----
     void init_selection();
+
+    // ---- xwayland.cpp ----
+    bool init_xwayland(std::string* error);
+    void shutdown_xwayland();
+    XwaylandRec* xwindow(WindowId id);
+    XwaylandRec* xrec_of(wlr_surface* surface);  // window or unmanaged surface of this wl_surface
+    void publish_xwindow(XwaylandRec& x, uint32_t changes);
+    void update_xwindow_outputs(XwaylandRec& x);
+    bool place_xwindow(XwaylandRec& x, const Rect& frame);
+    void set_xwindow_visible(XwaylandRec& x, bool visible);
+    void close_xwindow(XwaylandRec& x);
+    void set_xwindow_state(XwaylandRec& x, bool maximized, bool fullscreen);
+    void set_xwindow_minimized(XwaylandRec& x, bool minimized);
+    void activate_xwindow(XwaylandRec& x, bool activated);
+    std::vector<SurfaceNode> xwindow_tree(XwaylandRec& x);
+    void publish_unmanaged();
+    void update_xwayland_workareas();
+
+    // ---- foreign_toplevel.cpp ----
+    void init_foreign_toplevel();
+    void foreign_map(std::unique_ptr<ForeignHandles>& h, WindowId id);
+    void foreign_update(ForeignHandles* h, const WindowSnapshot& s, bool activated, bool minimized,
+                        const std::set<wlr_output*>& outputs);
+    void foreign_unmap(std::unique_ptr<ForeignHandles>& h);
+    WindowId window_of_ext_handle(wl_resource* handle_resource);
+
+    // ---- touch_tablet.cpp ----
+    void init_touch_tablet();
+    void add_touch(wlr_touch* touch, bool is_virtual);
+    void add_tablet(wlr_tablet* tablet);
+    void add_tablet_pad(wlr_tablet_pad* pad);
+    void touch_down(SurfaceId surface, int32_t id, double sx, double sy, uint32_t time);
+    void touch_motion(int32_t id, double sx, double sy, uint32_t time);
+    void touch_up(int32_t id, uint32_t time);
+    void touch_cancel();
+    TabletToolRec* tool_rec(TabletToolId id);
+    void tablet_tool_route(TabletToolId tool, SurfaceId surface, double sx, double sy, const TabletToolAxes& axes);
+    void tablet_tool_tip(TabletToolId tool, bool down);
+    void tablet_tool_button(TabletToolId tool, uint32_t button, bool pressed);
+    void tablet_pad_event(TabletPadId pad, int kind, uint32_t time, uint32_t index, double position, bool on);
+    void update_pad_focus(wlr_surface* focus);
+    void inject_touch(int kind, int32_t id, double x, double y);
+    void inject_tablet(int kind, double x, double y, double pressure, uint32_t button, bool on);
+    void shutdown_touch_tablet();
+
+    // ---- pointer_extras.cpp ----
+    void init_pointer_extras();
+    // Device motion: relative-pointer events and constraint enforcement.
+    // Returns false when a lock keeps the cursor where it is.
+    bool constrain_motion(double dx, double dy, double udx, double udy, uint32_t time, double* nx, double* ny);
+    void update_constraint();         // pointer focus changed
+    void update_shortcuts_inhibit();  // keyboard focus changed
+    bool shortcuts_inhibited() const { return active_inhibitor != nullptr; }
+
+    // ---- idle.cpp ----
+    void init_idle();
+    void activity();
+    void schedule_idle_check();
+    void update_idle_inhibit();
+    bool surface_visible(wlr_surface* surface);
+
+    // ---- text_input.cpp ----
+    void init_text_input();
+    void text_input_focus(wlr_surface* focus);
+    // Keys / modifiers routed to the focused client go to the input
+    // method's keyboard grab instead when it has one. True when grabbed.
+    bool im_grab_key(uint32_t time, uint32_t key, bool pressed);
+    bool im_grab_modifiers(const KeyboardModifiers& m);
+    wlr_text_input_v3* active_text_input();
+    void append_im_popups(WindowId window, std::vector<SurfaceNode>& tree);
+
+    // ---- session_lock.cpp ----
+    void init_session_lock();
+    bool locked() const { return lock_state != LockState::Unlocked; }
+    bool lock_allows(wlr_surface* surface);  // part of a lock surface's tree
+    void lock_output_presented(MonitorId output);
+    void refresh_lock_trees();
+    void configure_lock_surfaces();
+    void focus_lock_surface();
+    void end_seat_grabs();
+    void set_lock_state(LockState state);
+
+    // ---- capture.cpp ----
+    void run_output_capture(std::unique_ptr<CaptureJob> job, OutputImageSlot* source);
+    void run_window_capture(std::unique_ptr<CaptureJob> job);
+    void capture_done(uint64_t id, bool ok, int render_done_fd);
+    void notify_presented(OutputRec& out, OutputImageSlot* image, const std::vector<Rect>& damage, int64_t when_ns);
+    void notify_window_commit(WindowId window);
+    void fail_output_waiters(OutputRec& out);
+    void shutdown_captures();
+
+    // ---- screencopy.cpp / image_copy_capture.cpp / gamma.cpp ----
+    void init_screencopy();
+    void init_image_copy_capture();
+    void init_gamma();
+    void apply_gamma(OutputRec& out, wlr_output_state* state);
+    void gamma_output_gone(OutputRec& out);
 };
 
 }  // namespace brocompositor::wl

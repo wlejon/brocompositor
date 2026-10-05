@@ -31,6 +31,12 @@ namespace bctest {
 // display variables. Returns the directory.
 std::string private_runtime_dir();
 
+// Types text through the server's virtual keyboard (US layout: letters,
+// digits, space, '/', '-', '.', '_', '>' and '\n').
+void type_text(brocompositor::wl::ServerBackend& server, const std::string& text);
+void tap_key(brocompositor::wl::ServerBackend& server, uint32_t evdev_key);
+constexpr uint32_t kKeyA = 30, kKeyB = 48, kKeyC = 46, kKeyEnter = 28;
+
 struct HostOptions {
     brocompositor::wl::ServerConfig server;
     bool composite = true;          // draw windows/layers into the outputs (CPU)
@@ -38,6 +44,15 @@ struct HostOptions {
     bool focus_new_windows = true;  // FocusWindow on WindowAdded
     bool present = true;            // render + present on OutputFrame
     uint32_t background = 0xFF203040;
+    uint32_t lock_background = 0xFF000000;
+    // Draws only lock surfaces while the session is locked. false plays a
+    // naive host that keeps drawing windows (the server must withhold them).
+    bool lock_aware = true;
+    bool honor_requests = true;   // WindowRequest Activate / Close / (Un)Minimize / (Un)Maximize / (Un)Fullscreen
+    bool answer_captures = true;  // CaptureRequest: CPU copy, then capture_done()
+    // Presents the bounding box of what changed since the last composite
+    // ({Rect{}} when nothing did) instead of full damage.
+    bool track_damage = false;
     // Called on the host thread after each composite, before present (for
     // GPU hosts that want to render the image themselves).
     std::function<void(brocompositor::MonitorId, const brocompositor::SharedImage&,
@@ -52,7 +67,8 @@ public:
     void stop();
 
     brocompositor::wl::ServerBackend& server() { return *server_; }
-    std::vector<std::string> client_env() const;  // WAYLAND_DISPLAY + XDG_RUNTIME_DIR, no DISPLAY
+    // WAYLAND_DISPLAY + XDG_RUNTIME_DIR, DISPLAY = XWayland's (unset without it).
+    std::vector<std::string> client_env() const;
 
     // Waits (on the log) until `pred` holds; true when it did in time.
     bool wait(const std::function<bool()>& pred, int timeout_ms = 5000);
@@ -95,13 +111,28 @@ public:
     // Stops / resumes rendering on OutputFrame; resuming schedules a frame on
     // every output (nothing else would wake an idle output).
     void set_presenting(bool on);
+    uint64_t captures_answered() const {
+        std::lock_guard<std::mutex> lock(m_);
+        return captures_answered_;
+    }
 
 private:
     void run();
     void handle(const brocompositor::Event& e);
     void handle(const brocompositor::wl::ServerEvent& e);
     void render(brocompositor::MonitorId output);
+    std::vector<brocompositor::Rect> diff_damage(brocompositor::MonitorId output,
+                                                 const brocompositor::wl::CpuMapping& map);
     void route_pointer(double x, double y, uint32_t time);
+    // Topmost input surface at a layout point and its layout origin.
+    struct Pick {
+        brocompositor::wl::SurfaceId surface = 0;
+        double ox = 0, oy = 0;
+    };
+    Pick pick(double x, double y);
+    void handle_input(const brocompositor::wl::ServerEvent& e);
+    void handle_request(const brocompositor::wl::WindowRequest& r);
+    void answer_capture(const brocompositor::wl::CaptureRequest& r);
     void blit_tree(brocompositor::wl::CpuMapping& dst, const brocompositor::Rect& out_layout, float scale,
                    brocompositor::Point origin, const std::vector<brocompositor::wl::SurfaceNode>& tree,
                    std::vector<brocompositor::wl::SurfaceId>& drawn);
@@ -122,10 +153,14 @@ private:
     std::vector<brocompositor::wl::ServerEvent> sevents_;
     std::map<brocompositor::MonitorId, uint64_t> presents_;
     std::map<brocompositor::MonitorId, brocompositor::SharedImage> last_image_;
+    std::map<brocompositor::MonitorId, std::vector<uint32_t>> last_pixels_;  // track_damage, host thread
     std::map<brocompositor::MonitorId, std::set<brocompositor::wl::SurfaceId>> last_drawn_;
     std::vector<std::function<void()>> host_jobs_;
     std::vector<brocompositor::wl::OutputInfo> outputs_;
     brocompositor::wl::SurfaceId pointer_surface_ = 0;
+    uint64_t captures_answered_ = 0;
+    std::map<int32_t, Pick> touch_points_;  // host thread
+    std::map<brocompositor::wl::TabletToolId, Pick> tool_focus_;
 };
 
 }  // namespace bctest

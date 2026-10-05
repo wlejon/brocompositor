@@ -125,12 +125,47 @@ if(BROCOMPOSITOR_WITH_WAYLAND)
     bc_wl_protocol(${_wp}/staging/cursor-shape/cursor-shape-v1.xml cursor-shape-v1)
     bc_wl_protocol(${_wp}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml xdg-decoration-unstable-v1)
     bc_wl_protocol(${_wp}/unstable/tablet/tablet-unstable-v2.xml tablet-v2)
+    bc_wl_protocol(${_wp}/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml
+        pointer-constraints-unstable-v1)
+    bc_wl_protocol(${_wp}/unstable/relative-pointer/relative-pointer-unstable-v1.xml relative-pointer-unstable-v1)
+    bc_wl_protocol(${_wp}/unstable/text-input/text-input-unstable-v3.xml text-input-unstable-v3)
+    bc_wl_protocol(${_wp}/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml
+        keyboard-shortcuts-inhibit-unstable-v1)
+    bc_wl_protocol(${_wp}/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml idle-inhibit-unstable-v1)
+    bc_wl_protocol(${_wp}/staging/ext-idle-notify/ext-idle-notify-v1.xml ext-idle-notify-v1)
+    bc_wl_protocol(${_wp}/staging/ext-session-lock/ext-session-lock-v1.xml ext-session-lock-v1)
+    bc_wl_protocol(${_wp}/staging/xdg-activation/xdg-activation-v1.xml xdg-activation-v1)
     bc_wl_protocol(${CMAKE_CURRENT_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml wlr-layer-shell-unstable-v1)
+    bc_wl_protocol(${CMAKE_CURRENT_SOURCE_DIR}/protocols/input-method-unstable-v2.xml input-method-unstable-v2)
+
+    # Protocols the server implements itself (wlroots 0.18 has no
+    # renderer-free screencopy, no ext-image-copy-capture, and its gamma
+    # control needs a hardware LUT): their interface code is linked into the
+    # server.
+    set(BC_SERVER_PROTO_SOURCES "")
+    set(_bc_proto_before ${BC_PROTO_SOURCES})
+    bc_wl_protocol(${CMAKE_CURRENT_SOURCE_DIR}/protocols/wlr-screencopy-unstable-v1.xml wlr-screencopy-unstable-v1)
+    bc_wl_protocol(${CMAKE_CURRENT_SOURCE_DIR}/protocols/wlr-gamma-control-unstable-v1.xml
+        wlr-gamma-control-unstable-v1)
+    bc_wl_protocol(${_wp}/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml
+        ext-foreign-toplevel-list-v1)
+    bc_wl_protocol(${_wp}/staging/ext-image-capture-source/ext-image-capture-source-v1.xml
+        ext-image-capture-source-v1)
+    bc_wl_protocol(${_wp}/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml ext-image-copy-capture-v1)
+    list(REMOVE_ITEM BC_PROTO_SOURCES ${_bc_proto_before})
+    set(BC_SERVER_PROTO_SOURCES ${BC_PROTO_SOURCES})
+    set(BC_PROTO_SOURCES ${_bc_proto_before} ${BC_SERVER_PROTO_SOURCES})
+
+    add_library(brocompositor_wl_server_protocols STATIC ${BC_SERVER_PROTO_SOURCES})
+    target_include_directories(brocompositor_wl_server_protocols PUBLIC ${BC_PROTO_DIR})
+    target_link_libraries(brocompositor_wl_server_protocols PUBLIC PkgConfig::BC_WLR)
+    set_target_properties(brocompositor_wl_server_protocols PROPERTIES LINKER_LANGUAGE C
+        POSITION_INDEPENDENT_CODE ON)
 
     # Client-side protocol code for test clients and hosts that speak Wayland.
-    add_library(brocompositor_wl_protocols STATIC ${BC_PROTO_SOURCES})
+    add_library(brocompositor_wl_protocols STATIC ${_bc_proto_before})
     target_include_directories(brocompositor_wl_protocols PUBLIC ${BC_PROTO_DIR})
-    target_link_libraries(brocompositor_wl_protocols PUBLIC PkgConfig::BC_WLR)
+    target_link_libraries(brocompositor_wl_protocols PUBLIC PkgConfig::BC_WLR brocompositor_wl_server_protocols)
     set_target_properties(brocompositor_wl_protocols PROPERTIES LINKER_LANGUAGE C POSITION_INDEPENDENT_CODE ON)
 
     add_library(brocompositor_wayland STATIC
@@ -148,12 +183,30 @@ if(BROCOMPOSITOR_WITH_WAYLAND)
         src/linux/selection.cpp
         src/linux/setup.cpp
         src/linux/server.cpp
+        src/linux/server_session.cpp
+        src/linux/windows.cpp
+        src/linux/xwayland.cpp
+        src/linux/foreign_toplevel.cpp
+        src/linux/touch_tablet.cpp
+        src/linux/pointer_extras.cpp
+        src/linux/text_input.cpp
+        src/linux/session_lock.cpp
+        src/linux/idle.cpp
+        src/linux/capture.cpp
+        src/linux/screencopy.cpp
+        src/linux/image_copy_capture.cpp
+        src/linux/gamma.cpp
     )
     add_library(brocompositor::wayland ALIAS brocompositor_wayland)
-    add_dependencies(brocompositor_wayland brocompositor_wl_protocols)
+    add_dependencies(brocompositor_wayland brocompositor_wl_protocols brocompositor_wl_server_protocols)
     target_include_directories(brocompositor_wayland PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${BC_PROTO_DIR})
     target_compile_definitions(brocompositor_wayland PRIVATE WLR_USE_UNSTABLE)
-    target_link_libraries(brocompositor_wayland PUBLIC brocompositor_core PRIVATE PkgConfig::BC_WLR Threads::Threads)
+    pkg_get_variable(BC_WLR_HAVE_XWAYLAND wlroots-0.18 have_xwayland)
+    if(BC_WLR_HAVE_XWAYLAND STREQUAL "true")
+        target_compile_definitions(brocompositor_wayland PRIVATE BC_HAVE_XWAYLAND=1)
+    endif()
+    target_link_libraries(brocompositor_wayland PUBLIC brocompositor_core
+        PRIVATE PkgConfig::BC_WLR brocompositor_wl_server_protocols Threads::Threads)
     brocompositor_warnings(brocompositor_wayland)
     target_link_libraries(brocompositor INTERFACE brocompositor_wayland)
 endif()

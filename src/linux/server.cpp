@@ -98,7 +98,7 @@ bool ServerBackend::set_visible(WindowId id, bool visible) {
 bool ServerBackend::focus(WindowId id) {
     Server* s = impl_.get();
     return s->dispatcher->call([s, id] {
-        if (id != kNoWindow && !s->toplevel(id)) return false;
+        if (id != kNoWindow && !s->window_ref(id)) return false;
         s->focus_window(id);
         return true;
     });
@@ -142,7 +142,10 @@ bool ServerBackend::set_window_state(WindowId id, bool maximized, bool fullscree
     return s->dispatcher->call([=] { return s->set_window_state(id, maximized, fullscreen); });
 }
 
+// While the session is locked, client content is withheld from the host:
+// trees are empty, hit tests miss and surface() only finds lock surfaces.
 std::vector<SurfaceNode> ServerBackend::window_surfaces(WindowId id) const {
+    if (impl_->lock_gate->locked) return {};
     std::lock_guard<std::mutex> lock(impl_->mirror.m);
     auto it = impl_->mirror.windows.find(id);
     if (it == impl_->mirror.windows.end()) return {};
@@ -151,21 +154,13 @@ std::vector<SurfaceNode> ServerBackend::window_surfaces(WindowId id) const {
 
 std::optional<SurfaceHit> ServerBackend::hit_test(WindowId id, double wx, double wy) const {
     Server* s = impl_.get();
-    return s->dispatcher->call([=]() -> std::optional<SurfaceHit> {
-        ToplevelRec* t = s->toplevel(id);
-        if (!t) return std::nullopt;
-        wlr_box geo{};
-        wlr_xdg_surface_get_geometry(t->xdg->base, &geo);
-        double sx = 0, sy = 0;
-        wlr_surface* hit = wlr_xdg_surface_surface_at(t->xdg->base, wx + geo.x, wy + geo.y, &sx, &sy);
-        if (!hit) return std::nullopt;
-        return SurfaceHit{s->surface_id(hit), sx, sy};
-    });
+    return s->dispatcher->call([=]() -> std::optional<SurfaceHit> { return s->hit_test_window(id, wx, wy); });
 }
 
 // ---------------------------------------------------------------- layers
 
 std::vector<LayerSurfaceInfo> ServerBackend::layer_surfaces() const {
+    if (impl_->lock_gate->locked) return {};
     std::lock_guard<std::mutex> lock(impl_->mirror.m);
     std::vector<LayerSurfaceInfo> out;
     for (auto& [id, l] : impl_->mirror.layers)
@@ -174,6 +169,7 @@ std::vector<LayerSurfaceInfo> ServerBackend::layer_surfaces() const {
 }
 
 std::vector<SurfaceNode> ServerBackend::layer_surface_tree(LayerSurfaceId id) const {
+    if (impl_->lock_gate->locked) return {};
     std::lock_guard<std::mutex> lock(impl_->mirror.m);
     auto it = impl_->mirror.layers.find(id);
     if (it == impl_->mirror.layers.end()) return {};
@@ -184,7 +180,7 @@ std::optional<SurfaceHit> ServerBackend::hit_test_layer(LayerSurfaceId id, doubl
     Server* s = impl_.get();
     return s->dispatcher->call([=]() -> std::optional<SurfaceHit> {
         LayerRec* l = s->layer_by_id(id);
-        if (!l) return std::nullopt;
+        if (!l || s->locked()) return std::nullopt;
         double sx = 0, sy = 0;
         wlr_surface* hit = wlr_layer_surface_v1_surface_at(l->layer, lx, ly, &sx, &sy);
         if (!hit) return std::nullopt;
@@ -205,6 +201,7 @@ bool ServerBackend::focus_layer_surface(LayerSurfaceId id) {
 // ---------------------------------------------------------------- surfaces
 
 std::shared_ptr<ClientSurface> ServerBackend::surface(SurfaceId id) const {
+    if (!impl_->lock_gate->allows(id)) return nullptr;
     std::lock_guard<std::mutex> lock(impl_->mirror.m);
     auto it = impl_->mirror.surfaces.find(id);
     if (it == impl_->mirror.surfaces.end()) return nullptr;
@@ -345,6 +342,12 @@ void ServerBackend::keyboard_key(uint32_t time_msec, uint32_t keycode, bool pres
                                  const KeyboardModifiers& modifiers_after) {
     Server* s = impl_.get();
     s->dispatcher->post([=] {
+        // An input method's keyboard grab sees routed keys first (never while
+        // locked, and never keys the input method itself typed).
+        if (s->im_grab_key(time_msec, keycode, pressed)) {
+            s->im_grab_modifiers(modifiers_after);
+            return;
+        }
         wlr_seat_keyboard_notify_key(s->seat, time_msec, keycode,
                                      pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
         s->send_modifiers(modifiers_after);
@@ -353,7 +356,9 @@ void ServerBackend::keyboard_key(uint32_t time_msec, uint32_t keycode, bool pres
 
 void ServerBackend::keyboard_modifiers(const KeyboardModifiers& modifiers) {
     Server* s = impl_.get();
-    s->dispatcher->post([=] { s->send_modifiers(modifiers); });
+    s->dispatcher->post([=] {
+        if (!s->im_grab_modifiers(modifiers)) s->send_modifiers(modifiers);
+    });
 }
 
 void ServerBackend::warp_cursor(double x, double y) {

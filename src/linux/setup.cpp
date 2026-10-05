@@ -156,6 +156,15 @@ bool Server::init_globals(std::string* error) {
     init_seat();
     init_selection();
     init_output_manager(this);
+    init_foreign_toplevel();
+    init_touch_tablet();
+    init_pointer_extras();
+    init_idle();
+    init_text_input();
+    init_session_lock();
+    init_screencopy();
+    init_image_copy_capture();
+    init_gamma();
     new_output.connect(&backend->events.new_output,
                        [this](void* data) { on_new_output(static_cast<wlr_output*>(data)); });
 
@@ -183,7 +192,7 @@ bool Server::init_globals(std::string* error) {
 }
 
 bool Server::init(std::string* error) {
-    if (!init_backend(error) || !init_globals(error)) return false;
+    if (!init_backend(error) || !init_globals(error) || !init_xwayland(error)) return false;
     wl_event_loop_add_fd(
         loop, dispatcher->fd(), WL_EVENT_READABLE,
         [](int, uint32_t, void* data) {
@@ -212,11 +221,34 @@ void Server::shutdown() {
                         &new_decoration, &request_activate, &request_cursor_shape, &seat_request_cursor,
                         &seat_request_selection, &seat_request_primary, &seat_request_drag, &seat_start_drag,
                         &output_mgr_apply, &output_mgr_test, &layout_change, &selection_changed, &primary_changed,
-                        &drag_icon_destroy})
+                        &drag_icon_destroy, &new_constraint, &new_virtual_keyboard, &new_virtual_pointer,
+                        &new_shortcuts_inhibitor, &new_idle_inhibitor, &new_text_input, &new_input_method,
+                        &im_commit, &im_new_popup, &im_grab_keyboard, &im_destroy, &im_grab_destroy, &new_lock,
+                        &lock_new_surface, &lock_unlock, &lock_destroy, &pointer_grab_begin, &keyboard_grab_begin,
+                        &touch_grab_begin})
         l->disconnect();
-    if (tree_idle) wl_event_source_remove(tree_idle);
-    if (outputs_idle) wl_event_source_remove(outputs_idle);
-    tree_idle = outputs_idle = nullptr;
+    for (wl_event_source** src : {&tree_idle, &outputs_idle, &idle_check, &grab_end_idle})
+        if (*src) {
+            wl_event_source_remove(*src);
+            *src = nullptr;
+        }
+
+    // Desktop-session state first: its records listen on objects below.
+    shutdown_xwayland();
+    shutdown_captures();
+    shutdown_touch_tablet();
+    constraints.clear();
+    active_constraint = nullptr;
+    inhibitors.clear();
+    active_inhibitor = nullptr;
+    idle_inhibitors.clear();
+    text_inputs.clear();
+    input_popups.clear();
+    input_method = nullptr;
+    text_focus = nullptr;
+    lock_surfaces.clear();
+    lock = nullptr;
+    for (auto& [k, t] : toplevels) foreign_unmap(t->foreign);
 
     for (auto& [s, r] : surfaces) r->source->shutdown();
     {

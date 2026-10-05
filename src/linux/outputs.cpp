@@ -133,7 +133,7 @@ void Server::on_new_output(wlr_output* o) {
         if (e->state->committed & kLayoutFields) {
             arrange_all();
             mark_outputs_dirty();
-            for (auto& [k, t] : toplevels) update_window_outputs(*t);
+            update_all_window_outputs();
         }
     });
     out->request_state.connect(&o->events.request_state, [this, out](void* data) {
@@ -146,10 +146,16 @@ void Server::on_new_output(wlr_output* o) {
     });
     out->destroy.connect(&o->events.destroy, [this, out](void*) {
         MonitorId id = out->id;
+        fail_output_waiters(*out);
+        gamma_output_gone(*out);
         free_output_images(*out);
         for (auto& [k, l] : layers)
             if (l->layer->output == out->output) l->layer->output = nullptr;
         for (auto& [k, t] : toplevels) t->entered.erase(out->output);
+#ifdef BC_HAVE_XWAYLAND
+        for (auto& [k, x] : xsurfaces) x->entered.erase(out->output);
+#endif
+        lock_waiting.erase(id);
         {
             std::lock_guard<std::mutex> lock(mirror.m);
             mirror.outputs.erase(id);
@@ -229,7 +235,7 @@ bool Server::configure_output(MonitorId id, const OutputConfig& c) {
     if (ok && c.position) {
         wlr_output_layout_add(layout, o, c.position->x, c.position->y);
         arrange_all();
-        for (auto& [k, t] : toplevels) update_window_outputs(*t);
+        update_all_window_outputs();
         mark_outputs_dirty();
     }
     return ok;
@@ -296,6 +302,8 @@ void Server::publish_outputs() {
     if (mons_changed) events.push(MonitorsChanged{mons});
     server_events.push(OutputsChanged{infos});
     update_output_manager();
+    update_xwayland_workareas();
+    configure_lock_surfaces();
 }
 
 void Server::present(MonitorId id, PresentRequest req) {
@@ -331,14 +339,21 @@ void Server::present(MonitorId id, PresentRequest req) {
     }
     wlr_output_state_set_damage(&st, &damage);
     pixman_region32_fini(&damage);
+    apply_gamma(*out, &st);
 
+    // While locked only lock surfaces count as drawn: nothing else gets frame
+    // callbacks or presentation feedback (a hidden client stays throttled).
+    // A frame that still drew some other surface was composed before the host
+    // saw the lock, so it does not count towards the lock being in effect.
     std::vector<wlr_surface*> drawn;
+    bool lock_clean = true;
     for (SurfaceId sid : req.surfaces)
-        for (auto& [ws, r] : surfaces)
-            if (r->id == sid) {
+        if (wlr_surface* ws = surface_by_id(sid)) {
+            if (!locked() || lock_allows(ws))
                 drawn.push_back(ws);
-                break;
-            }
+            else
+                lock_clean = false;
+        }
     for (wlr_surface* ws : drawn) wlr_presentation_surface_textured_on_output(ws, out->output);
 
     set_image_state(id, req.image_id, SlotState::Scanout);
@@ -346,8 +361,11 @@ void Server::present(MonitorId id, PresentRequest req) {
     wlr_output_state_finish(&st);
     if (!ok) return fail();
     out->inflight[out->output->commit_seq] = req.image_id;
+    out->front_image = req.image_id;
     int64_t t = now_ns();
     for (wlr_surface* ws : drawn) send_frame_done(ws, t);
+    if (lock_clean) lock_output_presented(id);
+    notify_presented(*out, s, req.damage, t);
 }
 
 ReservationId Server::reserve_edge(MonitorId monitor, Edge edge, int32_t thickness, Rect* granted) {

@@ -48,7 +48,7 @@ void handle_config(Server* s, wlr_output_configuration_v1* cfg, bool test_only) 
     wlr_output_configuration_v1_destroy(cfg);
     if (!test_only) {
         s->arrange_all();
-        for (auto& [k, t] : s->toplevels) s->update_window_outputs(*t);
+        s->update_all_window_outputs();
         s->mark_outputs_dirty();
         s->update_output_manager();
     }

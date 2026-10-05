@@ -66,12 +66,44 @@ DRM/KMS + libinput + libseat session) and input devices only: no
   routes with `pointer_route()` / `pointer_button()` / `keyboard_key()`.
   Keys carry the post-key modifier state so routed modifiers stay in order
   with routed keys. Virtual devices (`inject_*`) drive the same path.
+* **XWayland** — started lazily on the first X11 connection (`XwaylandMode`).
+  X11 windows join the same model: WM_CLASS -> app_id, WM_TRANSIENT_FOR ->
+  owner, `_NET_WM_PID`, title, maximize / fullscreen states, focus,
+  close via WM_DELETE_WINDOW; override-redirect windows (menus, tooltips)
+  are `unmanaged_surfaces()`. X surfaces are ClientSurfaces like any other.
+  CLIPBOARD and PRIMARY are bridged to the Wayland selections. HiDPI: X
+  windows live in layout coordinates 1:1 with scale-1 buffers, so on a
+  scaled output the host scales them up (right size, soft) — X11 has no
+  per-window scale; GDK_SCALE / QT_SCALE_FACTOR stay the user's choice.
+* **Session** — ext-session-lock: while locked the server withholds every
+  non-lock surface (hit tests, focus, frame callbacks, `window_surfaces()`),
+  ends grabs, and sends `locked` only after each output presented a frame
+  containing no client surface, so even a host that keeps drawing windows
+  cannot leak them; only the lock client unlocks (a crashed locker leaves
+  the session locked until a new locker takes over). Screen capture
+  (wlr-screencopy v3, ext-image-copy-capture with output and toplevel
+  sources) copies from host-presented output images, on the CPU when it can
+  and otherwise as a `CaptureRequest` the host answers; damage-paced frames
+  follow the host's present damage (`{Rect{}}` = nothing changed). Gamma
+  control goes to the hardware LUT or, without one, to the host as
+  `GammaChanged`. Idle notify + idle inhibit, foreign-toplevel list and
+  management (taskbars: requests arrive as `WindowRequest`, foreign = true),
+  xdg-activation.
 * **Protocols** — xdg-shell (popups, wm capabilities, bounds), subcompositor,
-  wl_seat (xkbcommon), data-device / primary-selection / data-control,
-  layer-shell, xdg-decoration, viewporter, fractional-scale,
+  wl_seat (xkbcommon, touch), tablet-v2 (tools, pads), pointer-constraints +
+  relative-pointer, keyboard-shortcuts-inhibit, text-input-v3 +
+  input-method-v2 (IME popups join the focused window's tree),
+  virtual-keyboard / virtual-pointer, data-device / primary-selection /
+  data-control, layer-shell, xdg-decoration, viewporter, fractional-scale,
   presentation-time, linux-dmabuf v4 (feedback from the host's importable
-  formats), cursor-shape, xdg-activation, xdg-output, output-management.
-  XWayland is not supported yet.
+  formats), cursor-shape, xdg-activation, xdg-output, output-management,
+  ext-session-lock, wlr-screencopy, ext-image-copy-capture (+ output and
+  foreign-toplevel capture sources), ext-foreign-toplevel-list,
+  wlr-foreign-toplevel-management, wlr-gamma-control, ext-idle-notify,
+  idle-inhibit.
+* **Placement** — a new window opens centred in the work area; one larger
+  than the work area is configured down to it (X11 and Wayland alike) unless
+  its minimum size is larger, and then starts at the work area's corner.
 
 ### Host loop
 
@@ -141,7 +173,7 @@ Linux (GCC 12+ or Clang; Debian trixie package names):
 
 ```bash
 sudo apt install libwlroots-0.18-dev wayland-protocols libwayland-dev libxkbcommon-dev \
-    libpixman-1-dev libdrm-dev libgbm-dev libvulkan-dev
+    libpixman-1-dev libdrm-dev libgbm-dev libvulkan-dev libxcb1-dev xwayland
 cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-release
 ctest --test-dir build-release
 ```
@@ -182,6 +214,20 @@ example and Xvfb when installed (missing programs are skipped, not failed).
 | test_wl_nested | Wayland-nested child server (content, input, resize, close); X11 under Xvfb |
 | test_wl_vulkan | dmabuf client -> Vulkan import + pixel check (every capable device incl. lavapipe); Vulkan -> output image -> present |
 | test_wl_drm | DRM/KMS on an unused card (vkms) via libseat; opt-in |
+| test_wl_lock | session lock vs a hostile victim (pointer/keyboard/popup/grab, pixels) with lock-aware and naive hosts, locker crash, takeover, swaylock |
+| test_wl_xwayland | X11 client (WM_CLASS, transient, override-redirect, states, focus, WM_DELETE_WINDOW), xterm typing, xeyes, GTK 3 on X11, oversize placement |
+| test_wl_xselection | xclip / xsel <-> wl-copy / wl-paste, CLIPBOARD and PRIMARY |
+| test_wl_input_protocols | touch, tablet tool + pad, pointer lock/confine + relative pointer, shortcuts inhibit, wtype, wlrctl pointer |
+| test_wl_text_input | text-input-v3 <-> input-method-v2: preedit, commit, keyboard grab (bypassed while locked), IME popup, foot |
+| test_wl_capture | grim (full + region) pixels, ext-image-copy-capture output frames paced by damage, toplevel source via the host, host_capture_copies |
+| test_wl_taskbar | ext-foreign-toplevel-list, wlrctl toplevel list/find/focus/minimize/close, xdg-activation |
+| test_wl_session | swayidle idle/resume, idle inhibitor, wlsunset gamma ramps + restore, oversize Wayland placement |
+
+The XWayland tests set `XWAYLAND_NO_GLAMOR=1`: glamor cannot render into
+LINEAR dmabufs on NVIDIA, and software rendering is enough for the checks.
+They need XWayland in wlroots and `Xwayland` installed, else they skip.
+Extra clients used when installed: xterm, xeyes, xclip, xsel, swaylock,
+grim, wtype, wlrctl, wlsunset, swayidle, dbus-run-session.
 
 `test_wl_drm` needs DRM master, so it skips unless `BROCOMPOSITOR_DRM_DEVICE`
 names an unused KMS card (load `vkms` and use its card node) and a libseat

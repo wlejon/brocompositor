@@ -10,6 +10,7 @@
 #pragma once
 
 #include "brocompositor/linux/server.h"
+#include "linux/desktop_records.h"
 #include "linux/dispatcher.h"
 #include "linux/wlr.h"
 
@@ -24,7 +25,9 @@ struct Server;
 
 class ClientSurfaceImpl final : public ClientSurface, public std::enable_shared_from_this<ClientSurfaceImpl> {
 public:
-    ClientSurfaceImpl(Server* server, std::shared_ptr<Dispatcher> dispatcher, SurfaceId id, wlr_surface* surface);
+    // `gate`: while the session is locked, acquire() only serves lock surfaces.
+    ClientSurfaceImpl(Server* server, std::shared_ptr<Dispatcher> dispatcher, std::shared_ptr<LockGate> gate,
+                      SurfaceId id, wlr_surface* surface);
     ~ClientSurfaceImpl() override;
 
     // ---- SurfaceSource / ClientSurface (any thread) ----
@@ -74,6 +77,7 @@ private:
 
     Server* server_;
     std::shared_ptr<Dispatcher> dispatcher_;
+    std::shared_ptr<LockGate> gate_;
     const SurfaceId id_;
     wlr_surface* surface_;  // server thread only
 

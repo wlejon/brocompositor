@@ -89,8 +89,10 @@ void Host::stop() {
 }
 
 std::vector<std::string> Host::client_env() const {
-    return {"WAYLAND_DISPLAY=" + server_->socket_name(), "XDG_RUNTIME_DIR=" + server_->runtime_dir(), "DISPLAY",
-            "GDK_BACKEND=wayland", "QT_QPA_PLATFORM=wayland", "WAYLAND_DEBUG"};
+    std::string x = server_->xwayland_display();
+    return {"WAYLAND_DISPLAY=" + server_->socket_name(), "XDG_RUNTIME_DIR=" + server_->runtime_dir(),
+            x.empty() ? std::string("DISPLAY") : "DISPLAY=" + x, "GDK_BACKEND=wayland", "QT_QPA_PLATFORM=wayland",
+            "WAYLAND_DEBUG", "XAUTHORITY"};
 }
 
 void Host::run() {
@@ -149,7 +151,15 @@ void Host::handle(const ServerEvent& e) {
                            server_->keyboard_key(k.time_msec, k.keycode, k.pressed, k.modifiers_after);
                    },
                    [&](const SurfaceCommitted&) {},
-                   [&](const auto&) {},
+                   [&](const WindowRequest& r) {
+                       if (options_.honor_requests) handle_request(r);
+                   },
+                   [&](const CaptureRequest& r) {
+                       if (options_.answer_captures) answer_capture(r);
+                   },
+                   [&](const auto&) {
+                       if (options_.route_input) handle_input(e);
+                   },
                },
                e);
     {
@@ -160,27 +170,9 @@ void Host::handle(const ServerEvent& e) {
 }
 
 void Host::route_pointer(double x, double y, uint32_t time) {
-    // Topmost window under the pointer: the focused one first, then the rest.
-    std::vector<WindowId> order;
-    {
-        std::lock_guard<std::mutex> lock(m_);
-        WindowId f = wm_->focused();
-        if (f) order.push_back(f);
-        for (WindowId id : wm_->windows())
-            if (id != f) order.push_back(id);
-    }
-    for (WindowId id : order) {
-        auto snap = server_->query(id);
-        if (!snap || !server_->visible(id)) continue;
-        double wx = x - snap->frame.x, wy = y - snap->frame.y;
-        if (auto hit = server_->hit_test(id, wx, wy)) {
-            server_->pointer_route(hit->surface, hit->sx, hit->sy, time);
-            pointer_surface_ = hit->surface;
-            return;
-        }
-    }
-    server_->pointer_route(kNoSurface, 0, 0, time);
-    pointer_surface_ = kNoSurface;
+    Pick p = pick(x, y);
+    server_->pointer_route(p.surface, x - p.ox, y - p.oy, time);
+    pointer_surface_ = p.surface;
 }
 
 void Host::blit_tree(CpuMapping& dst, const Rect& out_layout, float scale, Point origin,
@@ -214,6 +206,29 @@ void Host::blit_tree(CpuMapping& dst, const Rect& out_layout, float scale, Point
     }
 }
 
+std::vector<Rect> Host::diff_damage(MonitorId output, const CpuMapping& map) {
+    uint32_t w = map.width(), h = map.height();
+    std::vector<uint32_t>& prev = last_pixels_[output];
+    bool fresh = prev.size() != size_t(w) * h;
+    if (fresh) prev.assign(size_t(w) * h, 0);
+    int32_t x0 = int32_t(w), y0 = int32_t(h), x1 = -1, y1 = -1;
+    for (uint32_t y = 0; y < h; ++y) {
+        auto* row = reinterpret_cast<const uint32_t*>(map.data() + size_t(y) * map.stride());
+        uint32_t* old = &prev[size_t(y) * w];
+        for (uint32_t x = 0; x < w; ++x)
+            if (row[x] != old[x]) {
+                old[x] = row[x];
+                x0 = std::min(x0, int32_t(x));
+                x1 = std::max(x1, int32_t(x));
+                y0 = std::min(y0, int32_t(y));
+                y1 = std::max(y1, int32_t(y));
+            }
+    }
+    if (fresh) return {};
+    if (x1 < 0) return {Rect{}};
+    return {Rect{x0, y0, x1 - x0 + 1, y1 - y0 + 1}};
+}
+
 void Host::render(MonitorId output) {
     auto img = server_->acquire_output_image(output);
     if (!img) return;
@@ -229,7 +244,14 @@ void Host::render(MonitorId output) {
         for (auto& o : server_->outputs())
             if (o.id == output) info = o;
     std::vector<SurfaceId> drawn;
-    if (options_.composite) {
+    bool locked = server_->session_lock_state() != LockState::Unlocked;
+    if (options_.composite && locked && options_.lock_aware) {
+        if (auto map = CpuMapping::map(*img, true)) {
+            map->fill(options_.lock_background);
+            blit_tree(*map, info.layout, info.scale, Point{info.layout.x, info.layout.y},
+                      server_->lock_surface_tree(output), drawn);
+        }
+    } else if (options_.composite) {
         if (auto map = CpuMapping::map(*img, true)) {
             map->fill(options_.background);
             auto layers = server_->layer_surfaces();
@@ -258,8 +280,14 @@ void Host::render(MonitorId output) {
                           server_->window_surfaces(id), drawn);
             }
             draw_layers(true);
+            // X11 override-redirect (menus, tooltips) above everything.
+            for (const auto& u : server_->unmanaged_surfaces())
+                blit_tree(*map, info.layout, info.scale, Point{u.rect.x, u.rect.y},
+                          {SurfaceNode{u.surface, Point{0, 0}, Size{u.rect.width, u.rect.height}, false}}, drawn);
         }
     }
+    if (options_.track_damage)
+        if (auto map = CpuMapping::map(*img, false)) req.damage = diff_damage(output, *map);
     req.surfaces = drawn;
     if (options_.render_hook) options_.render_hook(output, *img, req);
     if (server_->present_output(output, std::move(req))) {

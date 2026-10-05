@@ -25,14 +25,38 @@ if(TARGET brocompositor_wayland)
     target_link_libraries(bc_wl_client PRIVATE brocompositor_wl_protocols PkgConfig::BC_WLR)
     brocompositor_warnings(bc_wl_client)
 
-    add_library(bc_wl_harness STATIC linux/wl_harness.cpp linux/child.cpp)
+    # Clients for the desktop-session protocols: newer input protocols on a
+    # window, and the session roles (input method, lock screen, toplevel
+    # list, image copy capture).
+    add_executable(bc_wl_input_client linux/wl_input_client.cpp linux/wl_client_buffers.cpp)
+    add_executable(bc_wl_session_client linux/wl_session_client.cpp)
+    foreach(c bc_wl_input_client bc_wl_session_client)
+        target_include_directories(${c} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(${c} PRIVATE brocompositor_wl_protocols PkgConfig::BC_WLR)
+        brocompositor_warnings(${c})
+    endforeach()
+
+    add_library(bc_wl_harness STATIC linux/wl_harness.cpp linux/wl_harness_desktop.cpp linux/child.cpp)
     target_include_directories(bc_wl_harness PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-    target_compile_definitions(bc_wl_harness PUBLIC BC_WL_CLIENT="$<TARGET_FILE:bc_wl_client>")
+    target_compile_definitions(bc_wl_harness PUBLIC BC_WL_CLIENT="$<TARGET_FILE:bc_wl_client>"
+        BC_WL_INPUT_CLIENT="$<TARGET_FILE:bc_wl_input_client>"
+        BC_WL_SESSION_CLIENT="$<TARGET_FILE:bc_wl_session_client>")
     target_link_libraries(bc_wl_harness PUBLIC brocompositor_wayland brocompositor_core Threads::Threads)
-    add_dependencies(bc_wl_harness bc_wl_client)
+    add_dependencies(bc_wl_harness bc_wl_client bc_wl_input_client bc_wl_session_client)
     brocompositor_warnings(bc_wl_harness)
 
-    foreach(t window input clipboard layer outputs frames clients nested drm)
+    # A plain-xcb X11 client for the XWayland tests (when xcb is available).
+    pkg_check_modules(BC_XCB IMPORTED_TARGET xcb)
+    if(BC_XCB_FOUND)
+        add_executable(bc_x11_client linux/x11_client.cpp)
+        target_link_libraries(bc_x11_client PRIVATE PkgConfig::BC_XCB)
+        brocompositor_warnings(bc_x11_client)
+        target_compile_definitions(bc_wl_harness PUBLIC BC_X11_CLIENT="$<TARGET_FILE:bc_x11_client>")
+        add_dependencies(bc_wl_harness bc_x11_client)
+    endif()
+
+    foreach(t window input clipboard layer outputs frames clients nested drm lock xwayland xselection
+            input_protocols text_input capture taskbar session)
         if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/linux/test_wl_${t}.cpp)
             continue()
         endif()

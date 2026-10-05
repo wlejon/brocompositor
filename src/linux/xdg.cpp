@@ -77,6 +77,7 @@ WindowSnapshot Server::snapshot(ToplevelRec& t) {
 void Server::publish_window(ToplevelRec& t, uint32_t changes) {
     if (t.id == kNoWindow) return;
     WindowSnapshot s = snapshot(t);
+    s.minimized = t.minimized;
     if (s.monitor != t.snap.monitor) changes |= change::Monitor;
     bool differs = !(s == t.snap);
     t.snap = s;
@@ -85,6 +86,7 @@ void Server::publish_window(ToplevelRec& t, uint32_t changes) {
         auto it = mirror.windows.find(t.id);
         if (it != mirror.windows.end()) it->second.snap = s;
     }
+    foreign_update(t.foreign.get(), s, t.activated, t.minimized, t.entered);
     if (differs || changes) events.push(WindowChanged{s, changes});
 }
 
@@ -125,6 +127,7 @@ void Server::update_window_outputs(ToplevelRec& t) {
         },
         &ctx);
     t.entered = std::move(now);
+    foreign_update(t.foreign.get(), t.snap, t.activated, t.minimized, t.entered);
 }
 
 void Server::on_new_toplevel(wlr_xdg_toplevel* xdg) {
@@ -168,20 +171,17 @@ void Server::on_new_toplevel(wlr_xdg_toplevel* xdg) {
         Size g = geometry_size(t->xdg);
         t->last_geometry = g;
         if (!t->positioned) {
-            Rect area;
-            if (OutputRec* out = output_rec(output_at(mirror.cursor_x, mirror.cursor_y))) area = out->work_area;
-            if (area.empty() && !outputs.empty()) area = outputs.begin()->second->work_area;
-            t->pos = Point{area.x + std::max(0, (area.width - g.width) / 2),
-                           area.y + std::max(0, (area.height - g.height) / 2)};
-            // A transient (dialog) opens centred on its parent.
+            WindowId parent = kNoWindow;
             if (t->xdg->parent) {
                 auto it = toplevels.find(t->xdg->parent);
-                if (it != toplevels.end() && it->second->id != kNoWindow) {
-                    Size pg = geometry_size(it->second->xdg);
-                    t->pos = Point{it->second->pos.x + (pg.width - g.width) / 2,
-                                   it->second->pos.y + (pg.height - g.height) / 2};
-                }
+                if (it != toplevels.end()) parent = it->second->id;
             }
+            Size min{t->xdg->current.min_width, t->xdg->current.min_height};
+            Rect f = initial_frame(g, parent, min);
+            t->pos = Point{f.x, f.y};
+            // Larger than the work area: ask the client to shrink to it (the
+            // frame stays at the work area's corner until it does).
+            if (f.width != g.width || f.height != g.height) wlr_xdg_toplevel_set_size(t->xdg, f.width, f.height);
             t->positioned = true;
         }
         t->visible = true;
@@ -196,8 +196,10 @@ void Server::on_new_toplevel(wlr_xdg_toplevel* xdg) {
             mirror.windows[t->id] = m;
         }
         events.push(WindowAdded{t->snap});
+        foreign_map(t->foreign, t->id);
         update_window_outputs(*t);
         mark_tree_dirty(t->xdg->base->surface);
+        schedule_idle_check();
     });
 
     t->unmap.connect(&surface->events.unmap, [this, t](void*) {
@@ -205,18 +207,23 @@ void Server::on_new_toplevel(wlr_xdg_toplevel* xdg) {
         WindowId id = t->id;
         t->id = kNoWindow;
         t->entered.clear();
+        t->positioned = false;
+        foreign_unmap(t->foreign);
         {
             std::lock_guard<std::mutex> lock(mirror.m);
             mirror.windows.erase(id);
         }
         if (focused_window == id) {
             focused_window = kNoWindow;
-            wlr_seat_keyboard_notify_clear_focus(seat);
+            if (!locked()) wlr_seat_keyboard_notify_clear_focus(seat);
         }
         events.push(WindowRemoved{id});
+        schedule_idle_check();
+        notify_window_commit(id);  // window captures waiting on it fail (stopped)
     });
 
     t->destroy.connect(&xdg->events.destroy, [this, xdg](void*) {
+        if (auto it = toplevels.find(xdg); it != toplevels.end()) foreign_unmap(it->second->foreign);
         toplevels.erase(xdg);
         mark_all_trees_dirty();
     });
@@ -275,9 +282,9 @@ void Server::on_new_popup(wlr_xdg_popup* xdg) {
     auto unconstrain = [this, raw] {
         wlr_xdg_popup* popup = raw->xdg;
         if (!popup->parent) return;
-        ToplevelRec* top = nullptr;
-        LayerRec* layer = nullptr;
-        resolve_root(popup->parent, &top, &layer);
+        RootRef root = resolve_root(popup->parent);
+        ToplevelRec* top = root.top;
+        LayerRec* layer = root.layer;
         Point origin;
         if (top && top->id != kNoWindow) origin = root_origin(*top);
         else if (layer) origin = Point{layer->rect.x, layer->rect.y};
@@ -342,19 +349,15 @@ void Server::apply_decoration(ToplevelRec& t) {
 }
 
 void Server::on_activation_request(wlr_xdg_activation_v1_request_activate_event* e) {
-    wlr_xdg_toplevel* x = wlr_xdg_toplevel_try_from_wlr_surface(e->surface);
-    if (!x) return;
-    auto it = toplevels.find(x);
-    if (it == toplevels.end() || it->second->id == kNoWindow) return;
-    WindowRequest r;
-    r.window = it->second->id;
-    r.kind = WindowRequestKind::Activate;
-    server_events.push(r);
+    // The token (wlroots checked its seat / serial when the requester gave
+    // them) names any window: xdg toplevels and X11 windows alike.
+    WindowId id = resolve_root(e->surface).window();
+    if (id == kNoWindow) return;
+    push_window_request(id, WindowRequestKind::Activate, false);
 }
 
-bool Server::place_window(WindowId id, const Rect& frame) {
-    ToplevelRec* t = toplevel(id);
-    if (!t) return false;
+bool Server::place_xdg(ToplevelRec& tr, const Rect& frame) {
+    ToplevelRec* t = &tr;
     t->pos = Point{frame.x, frame.y};
     t->positioned = true;
     Size g = geometry_size(t->xdg);
@@ -368,30 +371,9 @@ bool Server::place_window(WindowId id, const Rect& frame) {
     return true;
 }
 
-bool Server::set_window_visible(WindowId id, bool visible) {
-    ToplevelRec* t = toplevel(id);
-    if (!t) return false;
-    t->visible = visible;
-    if (t->xdg->base->client->shell->version >= 6) wlr_xdg_toplevel_set_suspended(t->xdg, !visible);
-    std::lock_guard<std::mutex> lock(mirror.m);
-    auto it = mirror.windows.find(id);
-    if (it != mirror.windows.end()) it->second.visible = visible;
-    return true;
-}
-
-bool Server::close_window(WindowId id) {
-    ToplevelRec* t = toplevel(id);
-    if (!t) return false;
-    wlr_xdg_toplevel_send_close(t->xdg);
-    return true;
-}
-
-bool Server::set_window_state(WindowId id, bool maximized, bool fullscreen) {
-    ToplevelRec* t = toplevel(id);
-    if (!t) return false;
-    wlr_xdg_toplevel_set_maximized(t->xdg, maximized);
-    wlr_xdg_toplevel_set_fullscreen(t->xdg, fullscreen);
-    return true;
+void Server::set_xdg_visible(ToplevelRec& t, bool visible) {
+    t.visible = visible;
+    if (t.xdg->base->client->shell->version >= 6) wlr_xdg_toplevel_set_suspended(t.xdg, !visible);
 }
 
 }  // namespace brocompositor::wl

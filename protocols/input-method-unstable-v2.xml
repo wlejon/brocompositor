@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- From wlroots 0.18.2 protocol/ (descriptions shortened; interfaces unchanged). -->
+<protocol name="input_method_unstable_v2">
+  <copyright>
+    Copyright © 2008-2011 Kristian Høgsberg
+    Copyright © 2010-2011 Intel Corporation
+    Copyright © 2012-2013 Collabora, Ltd.
+    Copyright © 2012, 2013 Intel Corporation
+    Copyright © 2015, 2016 Jan Arne Petersen
+    Copyright © 2017, 2018 Red Hat, Inc.
+    Copyright © 2018       Purism SPC
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="Protocol for creating input methods">
+    Input methods (IMEs) take keyboard input and compose text for the
+    focused text-input-v3 client.
+  </description>
+
+  <interface name="zwp_input_method_v2" version="1">
+    <description summary="input method"/>
+
+    <enum name="error">
+      <entry name="role" value="0" summary="wl_surface has another role"/>
+    </enum>
+
+    <event name="activate">
+      <description summary="input method has been requested"/>
+    </event>
+
+    <event name="deactivate">
+      <description summary="deactivate event"/>
+    </event>
+
+    <event name="surrounding_text">
+      <description summary="surrounding text event"/>
+      <arg name="text" type="string"/>
+      <arg name="cursor" type="uint"/>
+      <arg name="anchor" type="uint"/>
+    </event>
+
+    <event name="text_change_cause">
+      <description summary="indicates the cause of surrounding text change"/>
+      <arg name="cause" type="uint" enum="zwp_text_input_v3.change_cause"/>
+    </event>
+
+    <event name="content_type">
+      <description summary="content purpose and hint"/>
+      <arg name="hint" type="uint" enum="zwp_text_input_v3.content_hint"/>
+      <arg name="purpose" type="uint" enum="zwp_text_input_v3.content_purpose"/>
+    </event>
+
+    <event name="done">
+      <description summary="apply state"/>
+    </event>
+
+    <request name="commit_string">
+      <description summary="commit string"/>
+      <arg name="text" type="string"/>
+    </request>
+
+    <request name="set_preedit_string">
+      <description summary="pre-edit string"/>
+      <arg name="text" type="string"/>
+      <arg name="cursor_begin" type="int"/>
+      <arg name="cursor_end" type="int"/>
+    </request>
+
+    <request name="delete_surrounding_text">
+      <description summary="delete text"/>
+      <arg name="before_length" type="uint"/>
+      <arg name="after_length" type="uint"/>
+    </request>
+
+    <request name="commit">
+      <description summary="apply state"/>
+      <arg name="serial" type="uint"/>
+    </request>
+
+    <request name="get_input_popup_surface">
+      <description summary="create popup surface"/>
+      <arg name="id" type="new_id" interface="zwp_input_popup_surface_v2"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <request name="grab_keyboard">
+      <description summary="grab hardware keyboard"/>
+      <arg name="keyboard" type="new_id"
+        interface="zwp_input_method_keyboard_grab_v2"/>
+    </request>
+
+    <event name="unavailable">
+      <description summary="input method unavailable"/>
+    </event>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the text input"/>
+    </request>
+  </interface>
+
+  <interface name="zwp_input_popup_surface_v2" version="1">
+    <description summary="popup surface"/>
+
+    <event name="text_input_rectangle">
+      <description summary="set text input area position"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+
+    <request name="destroy" type="destructor"/>
+  </interface>
+
+  <interface name="zwp_input_method_keyboard_grab_v2" version="1">
+    <description summary="keyboard grab"/>
+
+    <event name="keymap">
+      <description summary="keyboard mapping"/>
+      <arg name="format" type="uint" enum="wl_keyboard.keymap_format"
+        summary="keymap format"/>
+      <arg name="fd" type="fd" summary="keymap file descriptor"/>
+      <arg name="size" type="uint" summary="keymap size, in bytes"/>
+    </event>
+
+    <event name="key">
+      <description summary="key event"/>
+      <arg name="serial" type="uint" summary="serial number of the key event"/>
+      <arg name="time" type="uint" summary="timestamp with millisecond granularity"/>
+      <arg name="key" type="uint" summary="key that produced the event"/>
+      <arg name="state" type="uint" enum="wl_keyboard.key_state"
+        summary="physical state of the key"/>
+    </event>
+
+    <event name="modifiers">
+      <description summary="modifier and group state"/>
+      <arg name="serial" type="uint" summary="serial number of the modifiers event"/>
+      <arg name="mods_depressed" type="uint" summary="depressed modifiers"/>
+      <arg name="mods_latched" type="uint" summary="latched modifiers"/>
+      <arg name="mods_locked" type="uint" summary="locked modifiers"/>
+      <arg name="group" type="uint" summary="keyboard layout"/>
+    </event>
+
+    <request name="release" type="destructor">
+      <description summary="release the grab object"/>
+    </request>
+
+    <event name="repeat_info">
+      <description summary="repeat rate and delay"/>
+      <arg name="rate" type="int"
+           summary="the rate of repeating keys in characters per second"/>
+      <arg name="delay" type="int"
+           summary="delay in milliseconds since key down until repeating starts"/>
+    </event>
+  </interface>
+
+  <interface name="zwp_input_method_manager_v2" version="1">
+    <description summary="input method manager"/>
+
+    <request name="get_input_method">
+      <description summary="request an input method object"/>
+      <arg name="seat" type="object" interface="wl_seat"/>
+      <arg name="input_method" type="new_id" interface="zwp_input_method_v2"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the input method manager"/>
+    </request>
+  </interface>
+</protocol>

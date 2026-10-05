@@ -14,6 +14,8 @@
 #pragma once
 
 #include "brocompositor/events.h"
+#include "brocompositor/linux/input_events.h"
+#include "brocompositor/linux/session_events.h"
 #include "brocompositor/surface.h"
 
 #include <cstdint>
@@ -111,12 +113,14 @@ struct OutputsChanged {
     std::vector<OutputInfo> outputs;
 };
 
-// A surface committed new state. `window` / `layer` name the tree it belongs
-// to (0 when none: cursor, drag icon, unmapped).
+// A surface committed new state. `window` / `layer` / `unmanaged` / `lock`
+// name the tree it belongs to (0 when none: cursor, drag icon, unmapped).
 struct SurfaceCommitted {
     SurfaceId surface = kNoSurface;
     WindowId window = kNoWindow;
     LayerSurfaceId layer = 0;
+    UnmanagedId unmanaged = 0;
+    MonitorId lock = kNoMonitor;  // a lock surface of this output
     bool new_buffer = false;
 };
 
@@ -189,6 +193,9 @@ struct KeyboardKey {
     // routes; a host that swallows a key still forwards this with
     // keyboard_modifiers().
     KeyboardModifiers modifiers_after;
+    // The focused surface inhibits the host's shortcuts (see
+    // ShortcutsInhibitChanged).
+    bool shortcuts_inhibited = false;
 };
 
 enum class WindowRequestKind : uint32_t {
@@ -200,17 +207,22 @@ enum class WindowRequestKind : uint32_t {
     Unfullscreen = 5,
     Minimize = 6,
     ShowMenu = 7,
-    Activate = 8,  // xdg-activation: the client asks to be focused
+    Activate = 8,  // xdg-activation / _NET_ACTIVE_WINDOW / a taskbar: focus this window
+    Close = 9,     // a taskbar asked to close the window (the host decides, then close())
+    Unminimize = 10,
 };
 
 // A client asked for something the host decides (interactive move/resize,
 // state changes). The protocol's mandatory configure reply is already sent.
+// `foreign` requests come from another client (a taskbar using
+// wlr-foreign-toplevel-management) rather than the window's own.
 struct WindowRequest {
     WindowId window = kNoWindow;
     WindowRequestKind kind = WindowRequestKind::Move;
     uint32_t edges = 0;          // Resize: wlr_edges bits
     MonitorId monitor = kNoMonitor;  // Fullscreen: requested output
     Point point;                 // ShowMenu: window-relative
+    bool foreign = false;
 };
 
 struct SelectionChanged {
@@ -222,6 +234,13 @@ using ServerEvent =
     std::variant<OutputFrame, OutputPresented, OutputPresentFailed, OutputsChanged, SurfaceCommitted,
                  WindowTreeChanged, LayerSurfaceAdded, LayerSurfaceChanged, LayerSurfaceRemoved, CursorChanged,
                  DragIconChanged, PointerMotion, PointerButton, PointerAxis, PointerFrame, KeyboardKey,
-                 WindowRequest, SelectionChanged>;
+                 WindowRequest, SelectionChanged,
+                 // input_events.h
+                 TouchDown, TouchMotion, TouchUp, TouchCancel, TouchFrame, TabletToolProximity,
+                 TabletToolMotion, TabletToolTip, TabletToolButton, TabletPadButton, TabletPadRing,
+                 TabletPadStrip, PointerConstraintChanged, ShortcutsInhibitChanged,
+                 // session_events.h
+                 XwaylandStatus, UnmanagedSurfaceAdded, UnmanagedSurfaceChanged, UnmanagedSurfaceRemoved,
+                 SessionLockChanged, LockSurfaceChanged, IdleInhibitChanged, CaptureRequest, GammaChanged>;
 
 }  // namespace brocompositor::wl

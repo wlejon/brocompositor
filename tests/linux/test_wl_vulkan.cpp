@@ -257,8 +257,9 @@ int main() {
     VkHost vkh;
     std::string why;
     if (!vkh.load(&why)) {
+        // Nothing was imported: a skip, not a pass.
         std::printf("SKIP: %s\n", why.c_str());
-        return finish("test_wl_vulkan");
+        return 77;
     }
     for (size_t i = 0; i < vkh.devices().size(); ++i) run_device(vkh, i);
     return finish("test_wl_vulkan");

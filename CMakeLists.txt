@@ -29,7 +29,9 @@ if(BROCOMPOSITOR_COVERAGE AND _bc_top_level)
     if(MSVC)
         message(FATAL_ERROR "BROCOMPOSITOR_COVERAGE requires GCC or Clang (gcov instrumentation)")
     endif()
-    add_compile_options(--coverage -O0 -g)
+    # Atomic counters: the server, the workers and the tests run threads, and
+    # racing plain counters leave negative branch counts gcov cannot read.
+    add_compile_options(--coverage -fprofile-update=atomic -O0 -g)
     add_link_options(--coverage)
     message(STATUS "brocompositor: coverage instrumentation ON (-O0)")
 endif()

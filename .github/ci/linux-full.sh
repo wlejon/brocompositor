@@ -14,6 +14,7 @@
 set -euo pipefail
 
 : "${CC:=gcc}" "${CXX:=g++}" "${CONFIG:=Release}" "${COVERAGE:=OFF}"
+export LANG=C.UTF-8
 cd /w
 
 export DEBIAN_FRONTEND=noninteractive
@@ -30,7 +31,7 @@ build_packages=(
 # lavapipe so test_wl_vulkan has a Vulkan device without a GPU.
 test_packages=(
     xwayland xvfb xterm x11-apps xclip xsel
-    weston foot wl-clipboard wlr-randr gtk-3-examples qt6-base-examples
+    weston foot wl-clipboard wlr-randr gtk-3-examples qt6-base-examples qt6-wayland
     swaylock swayidle grim wtype wlrctl wlsunset seatd
     dbus dbus-user-session mesa-vulkan-drivers libgl1-mesa-dri libegl-mesa0 fonts-dejavu-core
     xkb-data
@@ -68,6 +69,10 @@ runuser -u ci -- env \
 rc=$?
 set -e
 [ -n "$seatd_pid" ] && kill "$seatd_pid" 2>/dev/null
+
+# Which Vulkan devices the dmabuf import test exercised (lavapipe here).
+echo
+sed -n '/Testing: test_wl_vulkan/,/<end of output>/p' build/Testing/Temporary/LastTest.log | grep -E '^ *--|texel|output images' || true
 
 # Scoped to brocompositor's own src/ and include/: brodisplays is measured by
 # its own CI, the tests are not the subject, and the wayland-scanner output is

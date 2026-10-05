@@ -11,9 +11,12 @@ if ! sudo modprobe vkms 2>/dev/null; then
     sudo modprobe vkms 2>/dev/null || echo "vkms is not available on kernel $(uname -r); test_wl_drm will skip"
 fi
 
+# vkms registers a bare platform (or faux) device named "vkms" with no driver
+# bound to it, so the card is recognised by its device's name.
+ls -l /sys/class/drm/ 2>/dev/null
 for card in /sys/class/drm/card[0-9] /sys/class/drm/card[0-9][0-9]; do
-    [ -e "$card/device/driver" ] || continue
-    if [ "$(basename "$(readlink -f "$card/device/driver")")" = vkms ]; then
+    [ -e "$card/device" ] || continue
+    if [ "$(basename "$(readlink -f "$card/device")")" = vkms ]; then
         dev="/dev/dri/$(basename "$card")"
         echo "vkms card: $dev"
         sudo chmod a+rw "$dev"

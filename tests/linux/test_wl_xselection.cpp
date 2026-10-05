@@ -44,7 +44,24 @@ void run(Host& host) {
     // An X11 window holds the focus.
     auto xwin = Child::spawn({BC_X11_CLIENT, "--class", "BcSel"}, host.client_env());
     REQUIRE(xwin);
-    REQUIRE(xwin->wait_line("focus_in", 10000));
+    // In stages, so a failure says which one: the X window maps, the host's
+    // WM focuses it, and the X client sees the focus.
+    WindowId w = kNoWindow;
+    bool managed = host.wait(
+        [&] {
+            for (WindowId id : host.server().windows())
+                if (auto s = host.server().query(id); s && s->app_id == "BcSel") w = id;
+            return w != kNoWindow;
+        },
+        10000);
+    bool focused = managed && host.wait([&] { return host.wm_focused() == w; });
+    bool seen = focused && xwin->wait_line("focus_in", 10000);
+    if (!seen) {
+        std::fprintf(stderr, "X window managed %d, WM-focused %d (wm_focused %llu, window %llu); client output:\n%s\n",
+                     managed, focused, (unsigned long long)host.wm_focused(), (unsigned long long)w,
+                     xwin->output().c_str());
+    }
+    REQUIRE(seen);
 #endif
     std::string got;
 

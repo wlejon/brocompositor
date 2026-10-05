@@ -126,7 +126,7 @@ void scripted(Host& host) {
     d->send("quit\n");
     CHECK(d->wait_exit(5000));
     CHECK(host.wait([&] { return host.server().unmanaged_surfaces().empty(); }));
-    CHECK(!host.server_events_of<UnmanagedSurfaceRemoved>().empty());
+    CHECK(host.wait([&] { return !host.server_events_of<UnmanagedSurfaceRemoved>().empty(); }));
 
     // A window larger than the output is shrunk into the work area and
     // centred, not left at x = 0 at full size.

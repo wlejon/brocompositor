@@ -324,6 +324,13 @@ void on_new_xsurface(Server* s, wlr_xwayland_surface* xs) {
                 s->update_xwindow_outputs(*x);
             }
         });
+        // wlroots maps an X surface on its first commit after association.
+        // When Xwayland committed the window's buffer before the xwm paired
+        // the surface with the X window (the two arrive on different
+        // connections, so a loaded host sees this), no later commit comes
+        // for a window that does not redraw, and it would never map. Map
+        // it now, as that commit would have.
+        if (wlr_surface_has_buffer(surface) && !surface->mapped) wlr_surface_map(surface);
     });
     x->dissociate.connect(&xs->events.dissociate, [s, x](void*) {
         if (x->unmanaged) unmap_unmanaged(s, x);

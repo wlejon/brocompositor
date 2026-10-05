@@ -22,15 +22,27 @@ struct Rig {
     WindowManager wm;
     explicit Rig(WindowManagerConfig cfg) : wm(std::move(cfg)) {}
 
+    // Executes commands through the typed (asynchronous) methods and waits
+    // for them, so a test step sees their effect.
+    void execute_and_wait(const std::vector<Command>& cmds) {
+        std::vector<Completion<bool>> pending;
+        for (const Command& c : cmds) {
+            if (auto* p = std::get_if<PlaceWindow>(&c)) pending.push_back(shell->place(p->id, p->frame));
+            else if (auto* v = std::get_if<SetWindowVisible>(&c)) pending.push_back(shell->set_visible(v->id, v->visible));
+            else if (auto* f = std::get_if<FocusWindow>(&c)) shell->focus(f->id).wait_for(2s);
+            else if (auto* cw = std::get_if<brocompositor::CloseWindow>(&c)) pending.push_back(shell->close(cw->id));
+        }
+        for (auto& p : pending) p.wait_for(5s);
+    }
     // Host loop iteration: facts in, commands out, executed.
     void pump(std::chrono::milliseconds quiet = 250ms) {
         auto& q = shell->events();
         do {
-            for (auto& e : q.drain()) shell->execute(wm.handle(e));
+            for (auto& e : q.drain()) execute_and_wait(wm.handle(e));
         } while (q.wait_for(quiet));
     }
     void run(const std::vector<Command>& cmds) {
-        shell->execute(cmds);
+        execute_and_wait(cmds);
         pump();
     }
     WindowId id_of(HWND h) { return shell->find(native(h)); }
@@ -55,9 +67,7 @@ void run() {
     cfg.layout.gap_inner = 4;
     cfg.layout.gap_outer = 6;
     Rig rig(cfg);
-    win::ShellConfig scfg;
-    scfg.process_filter = {app.pid()};
-    rig.shell = win::ShellBackend::create(scfg, nullptr);
+    rig.shell = win::ShellBackend::create(test_shell_config(app.pid()), nullptr);
     REQUIRE(rig.shell);
     rig.pump();
 
@@ -104,12 +114,18 @@ void run() {
 
     // Focus arriving on a parked window (what Alt-Tab does) pulls ws2 up.
     if (interactive_desktop()) {
-        auto r = rig.shell->focus(id_d);
-        CHECK(r == win::FocusResult::Focused);
-        rig.pump();
-        CHECK(rig.wm.workspace(ws2)->active);
-        CHECK(on_any_monitor(d));
-        CHECK(!on_any_monitor(a));
+        UserInputMonitor user;
+        uint64_t input_before = user.count();
+        auto r = rig.shell->focus(id_d).get();
+        if (r != win::FocusResult::Focused && user.count() != input_before) {
+            std::printf("  (focus-follows-workspace step skipped: the user was using the desktop)\n");
+        } else {
+            CHECK(r == win::FocusResult::Focused);
+            rig.pump();
+            CHECK(rig.wm.workspace(ws2)->active);
+            CHECK(on_any_monitor(d));
+            CHECK(!on_any_monitor(a));
+        }
         rig.run(rig.wm.activate_workspace(ws1));
     } else {
         std::printf("  (focus-follows-workspace step skipped: input desktop is not Default)\n");
@@ -123,11 +139,12 @@ void run() {
     CHECK_EQ(std::optional<Rect>(frame_of(c)), two.find(ic));
 
     // A reservation shrinks the work area; the tiled windows follow.
-    Rect granted;
-    ReservationId res = rig.shell->reserve_edge(mon, Edge::Top, 44, &granted);
+    ReservationId res = rig.shell->reserve_edge(mon, Edge::Top, 44);
     REQUIRE(res != kNoReservation);
     rig.pump(400ms);
-    CHECK_EQ(frame_of(a).y, granted.bottom() + 6);
+    auto granted = rig.shell->reservation_rect(res);
+    REQUIRE(granted.has_value());
+    CHECK_EQ(frame_of(a).y, granted->bottom() + 6);
     CHECK(rig.shell->release_edge(res));
     rig.pump(400ms);
     CHECK_EQ(std::optional<Rect>(frame_of(a)), two.find(ia));

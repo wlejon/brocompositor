@@ -3,7 +3,9 @@
 #include <dwmapi.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
+#include <filesystem>
 
 #define BC_TEST_APP_W L"" BC_TEST_APP
 
@@ -89,16 +91,78 @@ HWND TestApp::create(const std::string& name, const Rect& r, const std::string& 
     return reinterpret_cast<HWND>(static_cast<uintptr_t>(std::stoull(reply.substr(3))));
 }
 
-void EventLog::pump() {
-    for (auto& e : queue_.drain()) {
-        all_.push_back(std::move(e));
-        used_.push_back(false);
+namespace {
+
+std::atomic<uint64_t> g_user_input{0};
+
+LRESULT CALLBACK ll_mouse(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION) {
+        auto* m = reinterpret_cast<MSLLHOOKSTRUCT*>(lp);
+        if (!(m->flags & (LLMHF_INJECTED | LLMHF_LOWER_IL_INJECTED))) ++g_user_input;
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+LRESULT CALLBACK ll_keyboard(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION) {
+        auto* k = reinterpret_cast<KBDLLHOOKSTRUCT*>(lp);
+        if (!(k->flags & (LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED))) ++g_user_input;
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+}  // namespace
+
+UserInputMonitor::UserInputMonitor() {
+    std::atomic<DWORD> id{0};
+    std::atomic<bool> ready{false};
+    thread_ = std::thread([&] {
+        HHOOK m = SetWindowsHookExW(WH_MOUSE_LL, ll_mouse, GetModuleHandleW(nullptr), 0);
+        HHOOK k = SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard, GetModuleHandleW(nullptr), 0);
+        MSG msg;
+        PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+        id = (m && k) ? GetCurrentThreadId() : 0;
+        ready = true;
+        if (m && k)
+            while (GetMessageW(&msg, nullptr, 0, 0) > 0) DispatchMessageW(&msg);
+        if (m) UnhookWindowsHookEx(m);
+        if (k) UnhookWindowsHookEx(k);
+    });
+    while (!ready) Sleep(1);
+    thread_id_ = id;
+    if (!thread_id_) thread_.join();
+}
+
+UserInputMonitor::~UserInputMonitor() {
+    if (thread_id_) {
+        PostThreadMessageW(thread_id_, WM_QUIT, 0, 0);
+        thread_.join();
     }
 }
 
-void EventLog::settle(std::chrono::milliseconds quiet) {
-    pump();
-    while (queue_.wait_for(quiet)) pump();
+uint64_t UserInputMonitor::count() const { return g_user_input.load(); }
+
+std::string test_journal_dir() {
+    static std::string dir = [] {
+        wchar_t tmp[MAX_PATH] = L"";
+        GetTempPathW(MAX_PATH, tmp);
+        std::filesystem::path p = std::filesystem::path(tmp) /
+                                  ("bc-journal-" + std::to_string(GetCurrentProcessId()));
+        std::filesystem::create_directories(p);
+        std::atexit([] {
+            std::error_code ec;
+            std::filesystem::remove_all(std::filesystem::path(test_journal_dir()), ec);
+        });
+        return p.string();
+    }();
+    return dir;
+}
+
+brocompositor::win::ShellConfig test_shell_config(DWORD pid) {
+    brocompositor::win::ShellConfig cfg;
+    cfg.process_filter = {pid};
+    cfg.journal_dir = test_journal_dir();
+    return cfg;
 }
 
 ForegroundGuard::ForegroundGuard() : previous_(GetForegroundWindow()) {}

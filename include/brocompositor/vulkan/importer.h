@@ -27,6 +27,13 @@
 // server (ServerConfig::dmabuf_formats) so clients only allocate what the
 // host can import. wl_shm images (ImageHandleType::ShmFd) are not imported:
 // upload them from a CPU mapping.
+//
+// macOS (MoltenVK; ScreenCaptureKit capture / mac::SurfaceRing): images are
+// IOSurfaces (VK_EXT_metal_objects; the host also enables
+// VK_KHR_portability_subset as MoltenVK requires), the timeline a
+// MTLSharedEvent imported as a timeline semaphore. Per frame the host waits
+// for Frame::wait_value as on Windows; cmd_acquire() is a plain layout
+// transition (external_queue_family is VK_QUEUE_FAMILY_IGNORED).
 #pragma once
 
 #include "brocompositor/surface.h"
@@ -59,7 +66,8 @@ struct ImportedImage {
     // with an A = ONE swizzle.
     bool alpha_ignored = false;
     // Queue family the producer owns the image in (EXTERNAL on Windows,
-    // FOREIGN_EXT for dmabufs); cmd_acquire / cmd_release transfer from / to it.
+    // FOREIGN_EXT for dmabufs, IGNORED for IOSurfaces: no transfer);
+    // cmd_acquire / cmd_release transfer from / to it.
     uint32_t external_queue_family = VK_QUEUE_FAMILY_EXTERNAL;
 };
 
@@ -79,7 +87,8 @@ std::vector<const char*> required_device_extensions();
 
 // The physical device's identity in AdapterId terms (Windows: deviceLUID;
 // Linux: the render node from VK_EXT_physical_device_drm, nullopt when the
-// driver lacks it, e.g. lavapipe).
+// driver lacks it, e.g. lavapipe; macOS: the MTLDevice registryID MoltenVK
+// encodes in deviceLUID).
 std::optional<AdapterId> adapter_of(VkPhysicalDevice physical_device, PFN_vkGetInstanceProcAddr gipa,
                                     VkInstance instance);
 

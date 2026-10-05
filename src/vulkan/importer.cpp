@@ -1,6 +1,7 @@
 // The platform-neutral half of the Vulkan importer: function loading, format
 // mapping, destruction, and the ownership-transfer barriers. Handle-type
-// specifics live in importer_win32.cpp / importer_linux.cpp.
+// specifics live in importer_win32.cpp / importer_linux.cpp /
+// importer_apple.cpp.
 #include "vulkan/importer_impl.h"
 
 namespace brocompositor::vk {
@@ -136,8 +137,9 @@ void Importer::cmd_acquire(VkCommandBuffer cmd, const ImportedImage& image, uint
     // defined in GENERAL.
     b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     b.newLayout = new_layout;
+    // IGNORED (MoltenVK IOSurfaces): no ownership transfer, both sides IGNORED.
     b.srcQueueFamilyIndex = image.external_queue_family;
-    b.dstQueueFamilyIndex = queue_family;
+    b.dstQueueFamilyIndex = image.external_queue_family == VK_QUEUE_FAMILY_IGNORED ? VK_QUEUE_FAMILY_IGNORED : queue_family;
     b.image = image.image;
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     impl_->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &b);
@@ -150,7 +152,7 @@ void Importer::cmd_release(VkCommandBuffer cmd, const ImportedImage& image, uint
     b.dstAccessMask = 0;
     b.oldLayout = current_layout;
     b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.srcQueueFamilyIndex = queue_family;
+    b.srcQueueFamilyIndex = image.external_queue_family == VK_QUEUE_FAMILY_IGNORED ? VK_QUEUE_FAMILY_IGNORED : queue_family;
     b.dstQueueFamilyIndex = image.external_queue_family;
     b.image = image.image;
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};

@@ -165,6 +165,128 @@ void hostile(bool lock_aware) {
     host.stop();
 }
 
+// Input other clients synthesize does not reach the lock screen (or anything
+// else) while locked: wtype (virtual-keyboard), wlrctl (virtual-pointer), an
+// input method's commits and its view of the lock surface's text; nor does
+// a client key from before the lock that the host routes after it. The host
+// can allow it (LockedVirtualInput) and take that back; after unlock it all
+// works as before.
+void client_virtual_input() {
+    std::printf("-- client virtual input while locked\n");
+    Host host;
+    REQUIRE(start(host, true));
+    auto env = host.client_env();
+    auto victim = Child::spawn({BC_WL_INPUT_CLIENT, "--app-id", "victim", "--size", "300x200", "--color", "FFFF0000"},
+                               env);
+    REQUIRE(victim);
+    REQUIRE(victim->wait_line("kbenter", 5000));
+    auto ime = Child::spawn({BC_WL_SESSION_CLIENT, "--ime"}, env);
+    REQUIRE(ime);
+    REQUIRE(ime->wait_line("im_ready", 5000));
+    bool have_wtype = !which("wtype").empty(), have_wlrctl = !which("wlrctl").empty();
+    if (!have_wtype) std::printf("SKIP wtype parts: not installed\n");
+    if (!have_wlrctl) std::printf("SKIP wlrctl parts: not installed\n");
+    auto wtype = [&](const std::string& text) {
+        auto w = Child::spawn({"wtype", text}, env, true);
+        if (w) CHECK(w->wait_exit(5000));
+        return w ? w->pid() : 0;
+    };
+    auto client_keys = [&] {
+        size_t n = 0;
+        for (auto& k : host.server_events_of<KeyboardKey>()) n += k.origin == InputOrigin::Client ? 1 : 0;
+        return n;
+    };
+
+    // Before the lock: wtype types into the window, tagged as client input.
+    std::optional<KeyboardKey> stamped;
+    if (have_wtype) {
+        int pid = wtype("x");
+        CHECK(victim->wait_line("key ", 5000));
+        CHECK(host.wait([&] {
+            for (auto& k : host.server_events_of<KeyboardKey>())
+                if (k.origin == InputOrigin::Client && k.pressed) stamped = k;
+            return stamped.has_value();
+        }));
+        if (stamped) CHECK_EQ(stamped->client_pid, uint32_t(pid));
+    }
+
+    auto l1 = Child::spawn({BC_WL_SESSION_CLIENT, "--lock", "--color", "FF10C010", "--text-input"}, env);
+    REQUIRE(l1);
+    REQUIRE(l1->wait_line("locked", 5000));
+    CHECK(l1->wait_line("kbenter", 5000));
+    CHECK(l1->wait_line("ti_enter", 5000));
+    size_t victim_keys = victim->count("key ");
+
+    // The input method is not activated for the lock surface, never sees
+    // its text, and its commits go nowhere.
+    usleep(300 * 1000);
+    CHECK_EQ(ime->count("im_surrounding secret"), size_t(0));
+    ime->send("preedit abc\n");
+    ime->send("commit pwned\n");
+    usleep(300 * 1000);
+    CHECK_EQ(l1->count("ti_commit"), size_t(0));
+    CHECK_EQ(l1->count("ti_preedit"), size_t(0));
+
+    size_t lock_keys = l1->count("key ");
+    if (have_wtype) {
+        size_t before = client_keys();
+        wtype("abc");
+        usleep(400 * 1000);
+        CHECK_EQ(l1->count("key "), lock_keys);
+        CHECK_EQ(client_keys(), before);  // muted at the source: no events at all
+        // A client key from before the lock, routed by the host after it.
+        if (stamped) {
+            host.server().keyboard_key(stamped->time_msec, stamped->keycode, true, KeyboardModifiers{});
+            usleep(300 * 1000);
+            CHECK_EQ(l1->count("key "), lock_keys);
+            // The host's own routing still reaches the lock surface.
+            host.server().keyboard_key(stamped->time_msec + 1, stamped->keycode, true, KeyboardModifiers{});
+            host.server().keyboard_key(stamped->time_msec + 2, stamped->keycode, false, KeyboardModifiers{});
+            CHECK(l1->wait_count("key ", lock_keys + 2, 5000));
+            lock_keys = l1->count("key ");
+        }
+    }
+    if (have_wlrctl) {
+        WindowId w = host.window_by_app_id("victim");
+        REQUIRE(w != kNoWindow && host.server().query(w));
+        Rect f = host.server().query(w)->frame;
+        host.server().inject_pointer_warp(f.x + 100, f.y + 100);
+        CHECK(l1->wait_line("enter", 5000));
+        auto cursor = host.server().cursor_position();
+        size_t buttons = l1->count("button ");
+        auto m = Child::spawn({"wlrctl", "pointer", "move", "40", "30"}, env, true);
+        if (m) CHECK(m->wait_exit(5000));
+        auto c = Child::spawn({"wlrctl", "pointer", "click", "left"}, env, true);
+        if (c) CHECK(c->wait_exit(5000));
+        usleep(400 * 1000);
+        CHECK(host.server().cursor_position() == cursor);
+        CHECK_EQ(l1->count("button "), buttons);
+    }
+
+    // The host allows client input on the lock screen, then takes it back.
+    if (have_wtype) {
+        host.server().set_locked_virtual_input(LockedVirtualInput{true, {}});
+        wtype("ab");
+        CHECK(l1->wait_count("key ", lock_keys + 4, 5000));
+        lock_keys = l1->count("key ");
+        host.server().set_locked_virtual_input(LockedVirtualInput{});
+        wtype("c");
+        usleep(400 * 1000);
+        CHECK_EQ(l1->count("key "), lock_keys);
+    }
+    CHECK_EQ(victim->count("key "), victim_keys);
+
+    // Unlocked: everything works as before.
+    l1->send("unlock\n");
+    CHECK(l1->wait_line("unlocked", 5000));
+    CHECK(victim->wait_count("kbenter", 2, 5000));
+    if (have_wtype) {
+        wtype("z");
+        CHECK(victim->wait_count("key ", victim_keys + 2, 5000));
+    }
+    host.stop();
+}
+
 void swaylock() {
     if (which("swaylock").empty()) {
         std::printf("SKIP swaylock: not installed\n");
@@ -211,6 +333,7 @@ int main() {
     if (private_runtime_dir().empty()) return 1;
     hostile(true);
     hostile(false);
+    client_virtual_input();
     swaylock();
     return finish("test_wl_lock");
 }

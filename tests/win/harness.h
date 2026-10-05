@@ -1,18 +1,21 @@
 // Shared plumbing for the Windows backend tests: a child process that owns
 // the test windows, event waiting, and cleanup guards that keep the user's
 // desktop untouched (foreground restored, reservations removed on abnormal
-// exits).
+// exits, a private crash-recovery journal directory removed at exit).
 #pragma once
 
 #include "brocompositor/event_queue.h"
 #include "brocompositor/win/shell_backend.h"
+#include "event_log.h"
 
 #include <windows.h>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace bctest {
@@ -25,12 +28,19 @@ using brocompositor::Rect;
 // process, and work-area cleanup on Ctrl+C / unhandled exceptions.
 void init_windows_test();
 
+// A journal directory private to this test process (created on first use,
+// removed at exit), so tests never touch a real host's journals.
+std::string test_journal_dir();
+// A ShellConfig confined to `pid`'s windows with the private journal.
+brocompositor::win::ShellConfig test_shell_config(DWORD pid);
+
 class TestApp {
 public:
     TestApp() = default;
     ~TestApp();
     bool start();
     DWORD pid() const { return pi_.dwProcessId; }
+    HANDLE process() const { return pi_.hProcess; }
     std::string cmd(const std::string& line);  // returns the reply line
     // Creates a window (outer rect) and returns its HWND, or nullptr.
     HWND create(const std::string& name, const Rect& outer, const std::string& rrggbb,
@@ -43,59 +53,6 @@ private:
     HANDLE out_read_ = nullptr;
 };
 
-// Accumulates events from a queue and waits for matching ones.
-class EventLog {
-public:
-    explicit EventLog(brocompositor::EventQueue& q) : queue_(q) {}
-
-    // Pumps until pred matches an event (after the last mark()) that no
-    // previous wait consumed; consumes and returns it.
-    template <class T>
-    std::optional<T> wait(const std::function<bool(const T&)>& pred,
-                          std::chrono::milliseconds timeout = 3000ms) {
-        auto deadline = std::chrono::steady_clock::now() + timeout;
-        for (;;) {
-            pump();
-            for (size_t i = from_; i < all_.size(); ++i) {
-                if (used_[i]) continue;
-                if (auto* e = std::get_if<T>(&all_[i]); e && pred(*e)) {
-                    used_[i] = true;
-                    return *e;
-                }
-            }
-            auto now = std::chrono::steady_clock::now();
-            if (now >= deadline) return std::nullopt;
-            queue_.wait_for(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now));
-        }
-    }
-
-    // Events of type T (after the last mark()) matching pred, without consuming.
-    template <class T>
-    std::vector<T> collect(const std::function<bool(const T&)>& pred) {
-        pump();
-        std::vector<T> out;
-        for (size_t i = from_; i < all_.size(); ++i)
-            if (auto* e = std::get_if<T>(&all_[i]); e && pred(*e)) out.push_back(*e);
-        return out;
-    }
-
-    // Lets events keep arriving until `quiet` passes with none.
-    void settle(std::chrono::milliseconds quiet = 300ms);
-    // Later waits/collects only look at events after this point.
-    void mark() {
-        pump();
-        from_ = all_.size();
-    }
-    void pump();
-    const std::vector<Event>& all() const { return all_; }
-
-private:
-    brocompositor::EventQueue& queue_;
-    std::vector<Event> all_;
-    std::vector<bool> used_;
-    size_t from_ = 0;
-};
-
 // Restores the foreground window on scope exit (tests that take focus).
 class ForegroundGuard {
 public:
@@ -104,6 +61,22 @@ public:
 
 private:
     HWND previous_;
+};
+
+// Counts real (non-injected) keyboard and mouse input from the user, through
+// low-level hooks on a thread of its own. Tests that depend on the
+// foreground use it to tell "the backend failed" from "the user was using
+// the machine at the same moment".
+class UserInputMonitor {
+public:
+    UserInputMonitor();
+    ~UserInputMonitor();
+    uint64_t count() const;  // real input events seen so far
+    bool active() const { return thread_id_ != 0; }
+
+private:
+    std::thread thread_;
+    DWORD thread_id_ = 0;
 };
 
 Rect frame_of(HWND hwnd);   // DWMWA_EXTENDED_FRAME_BOUNDS

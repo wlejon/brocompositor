@@ -36,7 +36,13 @@ void Server::init_pointer_extras() {
     new_virtual_pointer.connect(&virtual_pointer->events.new_virtual_pointer, [this](void* data) {
         auto* e = static_cast<wlr_virtual_pointer_v1_new_pointer_event*>(data);
         add_pointer(&e->new_pointer->pointer);
-        if (!pointers.empty()) pointers.back()->mapped_output = e->suggested_output;
+        if (!pointers.empty()) {
+            PointerRec* r = pointers.back().get();
+            r->mapped_output = e->suggested_output;
+            r->origin = InputOrigin::Client;
+            r->owner = wl_resource_get_client(e->new_pointer->resource);
+            r->owner_pid = client_pid(r->owner);
+        }
     });
 
     shortcuts_inhibit = wlr_keyboard_shortcuts_inhibit_v1_create(display);

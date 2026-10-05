@@ -121,15 +121,18 @@ void ShellBackend::Impl::consider(HWND hwnd) {
 
 void ShellBackend::Impl::forget(HWND hwnd) {
     WindowId id = kNoWindow;
+    bool was_hidden = false;
     {
         std::lock_guard<std::mutex> lock(mutex);
         auto it = by_hwnd.find(hwnd);
         if (it == by_hwnd.end()) return;
         id = it->second.id;
+        was_hidden = it->second.hidden != Hidden::None;
         by_id.erase(id);
         by_hwnd.erase(it);
     }
     dirty.erase(hwnd);
+    if (was_hidden) journal_sync();
     queue.push(WindowRemoved{id});
 }
 

@@ -10,6 +10,7 @@
 #include "linux/wlr.h"
 
 #include <atomic>
+#include <deque>
 #include <list>
 #include <map>
 #include <memory>
@@ -120,7 +121,8 @@ struct KeyboardRec {
     Server* srv = nullptr;
     wlr_keyboard* keyboard = nullptr;
     bool is_virtual = false;
-    wl_client* owner = nullptr;  // virtual-keyboard-v1 client (IME loop detection)
+    wl_client* owner = nullptr;  // virtual-keyboard-v1 client (IME loop detection, lock policy)
+    uint32_t owner_pid = 0;
     // Mirrors the device's xkb state one key ahead, so a KeyboardKey event
     // can carry the modifier state that follows it.
     xkb_state* shadow = nullptr;
@@ -134,7 +136,22 @@ struct PointerRec {
     Server* srv = nullptr;
     wlr_pointer* pointer = nullptr;
     wlr_output* mapped_output = nullptr;  // absolute motion maps onto this output (else the layout)
+    InputOrigin origin = InputOrigin::Device;
+    wl_client* owner = nullptr;  // virtual-pointer-v1 client
+    uint32_t owner_pid = 0;
     Listener motion, motion_abs, button, axis, frame, destroy;
+};
+
+uint32_t client_pid(wl_client* client);
+
+// A key or button a client's virtual device produced, remembered briefly so
+// that one the host routes after the session locked is dropped.
+struct ClientInputStamp {
+    uint32_t time_msec = 0;
+    uint32_t code = 0;
+    bool pressed = false;
+    bool button = false;
+    uint32_t pid = 0;
 };
 
 // A window of either shell: an xdg_toplevel or a managed X11 window.
@@ -530,6 +547,8 @@ struct Server {
     // method's keyboard grab instead when it has one. True when grabbed.
     bool im_grab_key(uint32_t time, uint32_t key, bool pressed);
     bool im_grab_modifiers(const KeyboardModifiers& m);
+    // The input method may act (activation, commits) under the lock policy.
+    bool input_method_allowed() const;
     wlr_text_input_v3* active_text_input();
     void append_im_popups(WindowId window, std::vector<SurfaceNode>& tree);
 
@@ -537,6 +556,14 @@ struct Server {
     void init_session_lock();
     bool locked() const { return lock_state != LockState::Unlocked; }
     bool lock_allows(wlr_surface* surface);  // part of a lock surface's tree
+    // Whether input synthesized by `pid`'s client may act now (always while
+    // unlocked; per LockedVirtualInput while locked).
+    bool client_input_allowed(uint32_t pid) const;
+    // Records client-synthesized keys/buttons; routing a recorded one while
+    // locked (and not allowed) is refused.
+    void stamp_client_input(const ClientInputStamp& s);
+    bool routed_client_input_refused(uint32_t time_msec, uint32_t code, bool pressed, bool button) const;
+    std::deque<ClientInputStamp> client_stamps;
     void lock_output_presented(MonitorId output);
     void refresh_lock_trees();
     void configure_lock_surfaces();

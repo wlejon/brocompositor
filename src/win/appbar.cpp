@@ -5,8 +5,13 @@
 // ABM_QUERYPOS / ABM_SETPOS, after which the shell shrinks that monitor's
 // work area and broadcasts WM_SETTINGCHANGE(SPI_SETWORKAREA); the listener
 // turns that into MonitorsChanged. ABN_POSCHANGED (taskbar moved, another bar
-// registered) renegotiates and emits ReservationChanged. ABM_REMOVE gives the
-// space back; every exit path (release, destructor, emergency) ends in it.
+// registered) renegotiates. Every grant, first or renegotiated, is reported
+// as ReservationChanged. ABM_REMOVE gives the space back; every exit path
+// (release, destructor, emergency, the next instance's journal recovery)
+// ends in it.
+//
+// All SHAppBarMessage traffic (which waits on Explorer) runs on the shell
+// thread, never on a host thread.
 #include "win/shell_impl.h"
 #include "win/util.h"
 
@@ -29,14 +34,14 @@ UINT to_abe(Edge e) {
     return ABE_TOP;
 }
 
+}  // namespace
+
 void appbar_remove(HWND h) {
     APPBARDATA abd{};
     abd.cbSize = sizeof(abd);
     abd.hWnd = h;
     SHAppBarMessage(ABM_REMOVE, &abd);
 }
-
-}  // namespace
 
 void register_emergency_appbar(HWND hwnd) {
     std::lock_guard<std::mutex> lock(g_emergency_mutex);
@@ -89,74 +94,88 @@ bool ShellBackend::Impl::negotiate(AppBar& bar) {
     return !bar.granted.empty();
 }
 
-ReservationId ShellBackend::Impl::reserve(MonitorId monitor, Edge edge, int32_t thickness, Rect* granted) {
-    ReservationId result = kNoReservation;
-    call([&] {
+void ShellBackend::Impl::negotiate_new(ReservationId id) {
+    AppBar bar;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = appbars.find(id);
+        if (it == appbars.end()) return;  // released before negotiation
+        bar = it->second;
+    }
+    {
+        DpiScope dpi;
         monitors.enumerate();
-        if (thickness <= 0 || !monitors.find(monitor)) return;
-        HWND h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"brocompositor.appbar", L"",
-                                 WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, module_instance(), nullptr);
-        if (!h) return;
-        SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-        APPBARDATA abd{};
-        abd.cbSize = sizeof(abd);
-        abd.hWnd = h;
-        abd.uCallbackMessage = kMsgAppBar;
-        if (!SHAppBarMessage(ABM_NEW, &abd)) {
-            DestroyWindow(h);
-            return;
-        }
-        register_emergency_appbar(h);
-        AppBar bar;
-        bar.hwnd = h;
-        bar.monitor = monitor;
-        bar.edge = edge;
-        bar.thickness = thickness;
-        if (!negotiate(bar)) {
-            appbar_remove(h);
-            unregister_emergency_appbar(h);
-            DestroyWindow(h);
-            return;
-        }
+    }
+    auto refuse = [&] {
         {
             std::lock_guard<std::mutex> lock(mutex);
-            bar.id = next_reservation++;
-            appbars.emplace(bar.id, bar);
+            appbars.erase(id);
         }
-        result = bar.id;
-        if (granted) *granted = bar.granted;
-        report_monitors_if_changed();
-    });
-    return result;
+        queue.push(ReservationChanged{id, bar.monitor, Rect{}});
+    };
+    HWND h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"brocompositor.appbar", L"", WS_POPUP, 0, 0, 0,
+                             0, nullptr, nullptr, module_instance(), nullptr);
+    if (!h) return refuse();
+    SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    APPBARDATA abd{};
+    abd.cbSize = sizeof(abd);
+    abd.hWnd = h;
+    abd.uCallbackMessage = kMsgAppBar;
+    if (!SHAppBarMessage(ABM_NEW, &abd)) {
+        DestroyWindow(h);
+        return refuse();
+    }
+    register_emergency_appbar(h);
+    bar.hwnd = h;
+    // Journal the registration before the work area changes, so a kill from
+    // here on is recoverable.
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = appbars.find(id);
+        if (it != appbars.end()) it->second.hwnd = h;
+    }
+    journal_sync();
+    if (!negotiate(bar)) {
+        refuse();  // drops the record, so the journal rewrite below forgets it
+        remove_appbar_window(h);
+        return;
+    }
+    bool released = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = appbars.find(id);
+        if (it == appbars.end()) {
+            released = true;  // release_edge() raced the negotiation
+        } else {
+            it->second.granted = bar.granted;
+            it->second.negotiated = true;
+        }
+    }
+    if (released) {
+        remove_appbar_window(h);
+        return;
+    }
+    queue.push(ReservationChanged{id, bar.monitor, bar.granted});
+    report_monitors_if_changed();
 }
 
-bool ShellBackend::Impl::release(ReservationId id) {
-    bool ok = false;
-    call([&] {
-        AppBar bar;
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            auto it = appbars.find(id);
-            if (it == appbars.end()) return;
-            bar = it->second;
-            appbars.erase(it);
-        }
-        appbar_remove(bar.hwnd);
-        unregister_emergency_appbar(bar.hwnd);
-        DestroyWindow(bar.hwnd);
-        ok = true;
-        report_monitors_if_changed();
-    });
-    return ok;
+void ShellBackend::Impl::remove_appbar_window(HWND h) {
+    appbar_remove(h);
+    unregister_emergency_appbar(h);
+    DestroyWindow(h);
+    journal_sync();
+    report_monitors_if_changed();
 }
 
 void ShellBackend::Impl::release_all() {
-    std::vector<ReservationId> ids;
+    std::vector<HWND> windows;
     {
         std::lock_guard<std::mutex> lock(mutex);
-        for (auto& [id, bar] : appbars) ids.push_back(id);
+        for (auto& [id, bar] : appbars)
+            if (bar.hwnd) windows.push_back(bar.hwnd);
+        appbars.clear();
     }
-    for (ReservationId id : ids) release(id);
+    for (HWND h : windows) remove_appbar_window(h);
 }
 
 void ShellBackend::Impl::on_appbar_message(HWND hwnd, WPARAM notification) {
@@ -165,11 +184,14 @@ void ShellBackend::Impl::on_appbar_message(HWND hwnd, WPARAM notification) {
     {
         std::lock_guard<std::mutex> lock(mutex);
         for (auto& [id, b] : appbars)
-            if (b.hwnd == hwnd) bar = b;
+            if (b.hwnd == hwnd && b.negotiated) bar = b;
     }
     if (!bar) return;
     Rect before = bar->granted;
-    monitors.enumerate();
+    {
+        DpiScope dpi;
+        monitors.enumerate();
+    }
     if (!negotiate(*bar)) return;
     {
         std::lock_guard<std::mutex> lock(mutex);

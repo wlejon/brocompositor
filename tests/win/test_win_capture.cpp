@@ -158,14 +158,12 @@ void run() {
     // WGC delivers no new frames while parked; the last frame stays leasable
     // and capture resumes with current content as soon as it is shown.
     {
-        win::ShellConfig scfg;
-        scfg.process_filter = {app.pid()};
-        auto shell = win::ShellBackend::create(scfg, nullptr);
+        auto shell = win::ShellBackend::create(test_shell_config(app.pid()), nullptr);
         REQUIRE(shell);
         WindowId id = kNoWindow;
         wait_until([&] { return (id = shell->find(uint64_t(reinterpret_cast<uintptr_t>(h)))) != kNoWindow; });
         REQUIRE(id != kNoWindow);
-        CHECK(shell->set_visible(id, false));
+        CHECK(shell->set_visible(id, false).get());
         CHECK(!frame_of(h).intersects(virtual_screen_rect()));
         auto last = cap->acquire();
         uint64_t after = last ? last->sequence : 0;
@@ -179,7 +177,7 @@ void run() {
         CHECK(con.pixel(*still_img, *still, 20, 20).has_value());  // last frame remains usable
         cap->release(*still);
         uint64_t parked_seq = still->sequence;
-        CHECK(shell->set_visible(id, true));
+        CHECK(shell->set_visible(id, true).get());
         auto back = frame_with(*cap, con, parked_seq, 0x123456);
         CHECK(back.has_value());
         std::printf("  parked: frames %llu -> %llu across park/unpark\n", (unsigned long long)after,

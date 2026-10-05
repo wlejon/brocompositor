@@ -27,8 +27,7 @@ void run() {
     HWND pre = app.create("pre", r0, "336699");
     REQUIRE(pre);
 
-    win::ShellConfig cfg;
-    cfg.process_filter = {app.pid()};
+    win::ShellConfig cfg = test_shell_config(app.pid());
     std::string err;
     auto shell = win::ShellBackend::create(cfg, &err);
     if (!shell) std::fprintf(stderr, "create: %s\n", err.c_str());

@@ -77,6 +77,16 @@ void Server::init_seat() {
     vpointer = new wlr_pointer{};
     wlr_pointer_init(vpointer, &kVirtualPointerImpl, "brocompositor-virtual-pointer");
     add_pointer(vpointer);
+    pointers.back()->origin = InputOrigin::Host;
+}
+
+uint32_t client_pid(wl_client* client) {
+    if (!client) return 0;
+    pid_t pid = 0;
+    uid_t uid = 0;
+    gid_t gid = 0;
+    wl_client_get_credentials(client, &pid, &uid, &gid);
+    return uint32_t(pid);
 }
 
 void Server::on_new_input(wlr_input_device* device) {
@@ -116,7 +126,10 @@ void Server::add_keyboard(wlr_keyboard* kb, bool is_virtual) {
     k->srv = this;
     k->keyboard = kb;
     k->is_virtual = is_virtual || vk;
-    if (vk) k->owner = wl_resource_get_client(vk->resource);
+    if (vk) {
+        k->owner = wl_resource_get_client(vk->resource);
+        k->owner_pid = client_pid(k->owner);
+    }
     if (kb->keymap) k->shadow = xkb_state_new(kb->keymap);
     k->keymap.connect(&kb->events.keymap, [k](void*) {
         if (k->shadow) xkb_state_unref(k->shadow);
@@ -128,22 +141,35 @@ void Server::add_keyboard(wlr_keyboard* kb, bool is_virtual) {
     // (keyboard_key) or keyboard_modifiers(), keeping them in order.
     k->key.connect(&kb->events.key, [this, kb, k](void* data) {
         auto* e = static_cast<wlr_keyboard_key_event*>(data);
+        bool pressed = e->state == WL_KEYBOARD_KEY_STATE_PRESSED;
+        // Keep the shadow in step with the device whatever happens to the key.
+        if (k->shadow && e->update_state)
+            xkb_state_update_key(k->shadow, e->keycode + 8, pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
+        // A client's virtual keyboard is muted while locked (unless allowed):
+        // no event, no seat keyboard switch (its keymap would reach the lock
+        // surface), no idle activity.
+        if (k->owner && !client_input_allowed(k->owner_pid)) return;
         wlr_seat_set_keyboard(seat, kb);
         activity();
         KeyboardKey ev;
         ev.shortcuts_inhibited = shortcuts_inhibited();
         ev.time_msec = e->time_msec;
         ev.keycode = e->keycode;
-        ev.pressed = e->state == WL_KEYBOARD_KEY_STATE_PRESSED;
+        ev.pressed = pressed;
         ev.keysym = kb->xkb_state ? xkb_state_key_get_one_sym(kb->xkb_state, e->keycode + 8) : 0;
         ev.modifiers = wlr_keyboard_get_modifiers(kb);
         if (k->shadow) {
-            if (e->update_state)
-                xkb_state_update_key(k->shadow, e->keycode + 8, ev.pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
             ev.modifiers_after.depressed = xkb_state_serialize_mods(k->shadow, XKB_STATE_MODS_DEPRESSED);
             ev.modifiers_after.latched = xkb_state_serialize_mods(k->shadow, XKB_STATE_MODS_LATCHED);
             ev.modifiers_after.locked = xkb_state_serialize_mods(k->shadow, XKB_STATE_MODS_LOCKED);
             ev.modifiers_after.group = xkb_state_serialize_layout(k->shadow, XKB_STATE_LAYOUT_EFFECTIVE);
+        }
+        if (k->owner) {
+            ev.origin = InputOrigin::Client;
+            ev.client_pid = k->owner_pid;
+            stamp_client_input(ClientInputStamp{ev.time_msec, ev.keycode, ev.pressed, false, k->owner_pid});
+        } else if (k->is_virtual) {
+            ev.origin = InputOrigin::Host;
         }
         server_events.push(ev);
     });
@@ -161,36 +187,48 @@ void Server::add_pointer(wlr_pointer* p) {
     PointerRec* raw = r.get();
     raw->srv = this;
     raw->pointer = p;
-    raw->motion.connect(&p->events.motion, [this](void* data) {
+    // A client's virtual pointer is muted while locked (unless allowed): the
+    // cursor does not move and no event reaches the host.
+    auto muted = [this, raw] { return raw->owner && !client_input_allowed(raw->owner_pid); };
+    raw->motion.connect(&p->events.motion, [this, raw, muted](void* data) {
         auto* e = static_cast<wlr_pointer_motion_event*>(data);
+        if (muted()) return;
         activity();
         double nx = 0, ny = 0;
         if (constrain_motion(e->delta_x, e->delta_y, e->unaccel_dx, e->unaccel_dy, e->time_msec, &nx, &ny))
             warp(nx, ny);
-        server_events.push(PointerMotion{e->time_msec, cursor_x, cursor_y, e->unaccel_dx, e->unaccel_dy});
+        server_events.push(PointerMotion{e->time_msec, cursor_x, cursor_y, e->unaccel_dx, e->unaccel_dy,
+                                         raw->origin, raw->owner_pid});
     });
-    raw->motion_abs.connect(&p->events.motion_absolute, [this, raw](void* data) {
+    raw->motion_abs.connect(&p->events.motion_absolute, [this, raw, muted](void* data) {
         auto* e = static_cast<wlr_pointer_motion_absolute_event*>(data);
+        if (muted()) return;
         activity();
         wlr_box all{};
         wlr_output_layout_get_box(layout, raw->mapped_output, &all);
         double x = all.x + e->x * all.width, y = all.y + e->y * all.height;
         double nx = 0, ny = 0;
         if (constrain_motion(x - cursor_x, y - cursor_y, 0, 0, e->time_msec, &nx, &ny)) warp(nx, ny);
-        server_events.push(PointerMotion{e->time_msec, cursor_x, cursor_y, 0, 0});
+        server_events.push(PointerMotion{e->time_msec, cursor_x, cursor_y, 0, 0, raw->origin, raw->owner_pid});
     });
-    raw->button.connect(&p->events.button, [this](void* data) {
+    raw->button.connect(&p->events.button, [this, raw, muted](void* data) {
         auto* e = static_cast<wlr_pointer_button_event*>(data);
+        if (muted()) return;
         activity();
-        server_events.push(PointerButton{e->time_msec, e->button, e->state == WL_POINTER_BUTTON_STATE_PRESSED});
+        bool pressed = e->state == WL_POINTER_BUTTON_STATE_PRESSED;
+        if (raw->owner) stamp_client_input(ClientInputStamp{e->time_msec, e->button, pressed, true, raw->owner_pid});
+        server_events.push(PointerButton{e->time_msec, e->button, pressed, raw->origin, raw->owner_pid});
     });
-    raw->axis.connect(&p->events.axis, [this](void* data) {
+    raw->axis.connect(&p->events.axis, [this, raw, muted](void* data) {
         auto* e = static_cast<wlr_pointer_axis_event*>(data);
+        if (muted()) return;
         activity();
         server_events.push(PointerAxis{e->time_msec, uint32_t(e->orientation), uint32_t(e->source), e->delta,
-                                       e->delta_discrete});
+                                       e->delta_discrete, raw->origin, raw->owner_pid});
     });
-    raw->frame.connect(&p->events.frame, [this](void*) { server_events.push(PointerFrame{}); });
+    raw->frame.connect(&p->events.frame, [this, muted](void*) {
+        if (!muted()) server_events.push(PointerFrame{});
+    });
     raw->destroy.connect(&p->base.events.destroy, [this, raw](void*) {
         pointers.remove_if([raw](const std::unique_ptr<PointerRec>& x) { return x.get() == raw; });
     });

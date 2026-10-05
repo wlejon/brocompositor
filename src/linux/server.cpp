@@ -319,6 +319,8 @@ void ServerBackend::pointer_route(SurfaceId surface, double sx, double sy, uint3
 void ServerBackend::pointer_button(uint32_t time_msec, uint32_t button, bool pressed) {
     Server* s = impl_.get();
     s->dispatcher->post([=] {
+        // A client's synthesized click from before the lock, routed after it.
+        if (s->routed_client_input_refused(time_msec, button, pressed, true)) return;
         wlr_seat_pointer_notify_button(s->seat, time_msec, button,
                                        pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
     });
@@ -342,6 +344,8 @@ void ServerBackend::keyboard_key(uint32_t time_msec, uint32_t keycode, bool pres
                                  const KeyboardModifiers& modifiers_after) {
     Server* s = impl_.get();
     s->dispatcher->post([=] {
+        // A client's synthesized key from before the lock, routed after it.
+        if (s->routed_client_input_refused(time_msec, keycode, pressed, false)) return;
         // An input method's keyboard grab sees routed keys first (never while
         // locked, and never keys the input method itself typed).
         if (s->im_grab_key(time_msec, keycode, pressed)) {

@@ -155,6 +155,16 @@ struct DragIconChanged {
     SurfaceId surface = kNoSurface;  // kNoSurface: drag ended / no icon
 };
 
+// Where a raw input event came from. Client input (virtual-keyboard /
+// virtual-pointer protocols) is synthesized by another program: hosts may
+// want to keep it away from their own shortcuts, and the server keeps it
+// away from everything while the session is locked (LockedVirtualInput).
+enum class InputOrigin : uint32_t {
+    Device = 0,  // a physical device (libinput, a nested backend's seat)
+    Host = 1,    // ServerBackend::inject_*()
+    Client = 2,  // a client's virtual keyboard / pointer; client_pid says whose
+};
+
 // Raw input, already accumulated into the server's cursor (clamped to the
 // output layout). The host hit-tests and routes it back with the pointer_* /
 // keyboard_* methods; nothing reaches a client unless the host routes it.
@@ -162,11 +172,15 @@ struct PointerMotion {
     uint32_t time_msec = 0;
     double x = 0, y = 0;     // cursor position, layout space
     double dx = 0, dy = 0;   // unaccelerated device delta (0 for absolute devices)
+    InputOrigin origin = InputOrigin::Device;
+    uint32_t client_pid = 0;  // InputOrigin::Client
 };
 struct PointerButton {
     uint32_t time_msec = 0;
     uint32_t button = 0;     // linux/input-event-codes.h (BTN_LEFT = 0x110)
     bool pressed = false;
+    InputOrigin origin = InputOrigin::Device;
+    uint32_t client_pid = 0;
 };
 struct PointerAxis {
     uint32_t time_msec = 0;
@@ -174,6 +188,8 @@ struct PointerAxis {
     uint32_t source = 0;       // wl_pointer_axis_source
     double delta = 0;
     int32_t delta_discrete = 0;  // value120
+    InputOrigin origin = InputOrigin::Device;
+    uint32_t client_pid = 0;
 };
 struct PointerFrame {};
 // Serialized xkb modifier state (what wl_keyboard.modifiers carries).
@@ -196,6 +212,8 @@ struct KeyboardKey {
     // The focused surface inhibits the host's shortcuts (see
     // ShortcutsInhibitChanged).
     bool shortcuts_inhibited = false;
+    InputOrigin origin = InputOrigin::Device;
+    uint32_t client_pid = 0;  // InputOrigin::Client
 };
 
 enum class WindowRequestKind : uint32_t {

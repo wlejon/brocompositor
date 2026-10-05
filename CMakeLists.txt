@@ -5,6 +5,8 @@ project(brocompositor VERSION 0.2.0 LANGUAGES CXX)
 # Targets
 #   brocompositor::core    portable window-management core (pure, no OS calls)
 #   brocompositor::win     Windows shell backend + Windows.Graphics.Capture (WIN32)
+#   brocompositor::mac     macOS shell backend + ScreenCaptureKit capture (APPLE)
+#   brocompositor::wayland Linux Wayland server role (wlroots 0.18)
 #   brocompositor::vulkan  optional Vulkan importer for the surface contract
 #   brocompositor::brocompositor  everything available on this platform
 
@@ -48,6 +50,21 @@ add_library(brocompositor INTERFACE)
 add_library(brocompositor::brocompositor ALIAS brocompositor)
 target_link_libraries(brocompositor INTERFACE brocompositor_core)
 
+# ---------------------------------------------------------------- shell-role common
+# Shared by the shell backends (Windows, macOS): the crash-recovery journal
+# and the per-process operation workers. Portable C++ (std::filesystem,
+# std::thread); private to the backends, built (and unit-tested) everywhere.
+find_package(Threads REQUIRED)
+add_library(brocompositor_shell_common STATIC
+    src/shell/journal.cpp
+    src/shell/serial_workers.cpp
+)
+target_include_directories(brocompositor_shell_common PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
+target_link_libraries(brocompositor_shell_common PUBLIC brocompositor_core Threads::Threads)
+set_target_properties(brocompositor_shell_common PROPERTIES POSITION_INDEPENDENT_CODE ON)
+brocompositor_warnings(brocompositor_shell_common)
+
 # ---------------------------------------------------------------- Windows
 if(WIN32)
     add_library(brocompositor_win STATIC
@@ -57,6 +74,7 @@ if(WIN32)
         src/win/shell_backend.cpp
         src/win/shell_tracking.cpp
         src/win/window_ops.cpp
+        src/win/recovery.cpp
         src/win/appbar.cpp
         src/win/capture_device.cpp
         src/win/window_capture.cpp
@@ -64,7 +82,7 @@ if(WIN32)
     add_library(brocompositor::win ALIAS brocompositor_win)
     target_link_libraries(brocompositor_win
         PUBLIC brocompositor_core
-        PRIVATE user32 shell32 dwmapi shcore d3d11 dxgi windowsapp)
+        PRIVATE brocompositor_shell_common user32 shell32 ole32 dwmapi shcore d3d11 dxgi windowsapp)
     target_compile_definitions(brocompositor_win PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_include_directories(brocompositor_win PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     brocompositor_warnings(brocompositor_win)
@@ -73,6 +91,40 @@ if(WIN32)
         target_compile_options(brocompositor_win PRIVATE /bigobj)
     endif()
     target_link_libraries(brocompositor INTERFACE brocompositor_win)
+endif()
+
+# ---------------------------------------------------------------- macOS
+# Shell role over WindowServer (CGWindowList + Accessibility) and
+# ScreenCaptureKit capture into IOSurface/Metal. Objective-C++ stays in the
+# .mm files (appkit, metal_ring, window_capture); the rest is C++ over the
+# CoreFoundation / CoreGraphics / AX C APIs.
+if(APPLE)
+    enable_language(OBJCXX)
+    add_library(brocompositor_mac STATIC
+        src/mac/system.cpp
+        src/mac/appkit.mm
+        src/mac/permissions.cpp
+        src/mac/ax.cpp
+        src/mac/app_worker.cpp
+        src/mac/shell_backend.cpp
+        src/mac/shell_tracking.cpp
+        src/mac/window_ops.cpp
+        src/mac/recovery.cpp
+        src/mac/metal_ring.mm
+        src/mac/window_capture.mm
+    )
+    add_library(brocompositor::mac ALIAS brocompositor_mac)
+    set_target_properties(brocompositor_mac PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON)
+    target_compile_options(brocompositor_mac PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+    target_include_directories(brocompositor_mac PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(brocompositor_mac
+        PUBLIC brocompositor_core
+        PRIVATE brocompositor_shell_common
+        "-framework CoreFoundation" "-framework CoreGraphics" "-framework ApplicationServices"
+        "-framework AppKit" "-framework IOSurface" "-framework Metal" "-framework CoreMedia"
+        "-framework CoreVideo" "-weak_framework ScreenCaptureKit")
+    brocompositor_warnings(brocompositor_mac)
+    target_link_libraries(brocompositor INTERFACE brocompositor_mac)
 endif()
 
 # ---------------------------------------------------------------- Linux: Wayland server role
@@ -218,11 +270,12 @@ set(_bc_vk_default OFF)
 find_package(Vulkan QUIET)
 find_path(BROCOMPOSITOR_VULKAN_INCLUDE_DIR vulkan/vulkan.h
     HINTS "${Vulkan_INCLUDE_DIR}" "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
-if((WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND BROCOMPOSITOR_VULKAN_INCLUDE_DIR)
+if((WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND BROCOMPOSITOR_VULKAN_INCLUDE_DIR)
     set(_bc_vk_default ON)
 endif()
 option(BROCOMPOSITOR_WITH_VULKAN
-    "Build the Vulkan surface importer (Win32 D3D11 handles; Linux dmabuf + sync_file)" ${_bc_vk_default})
+    "Build the Vulkan surface importer (Win32 D3D11 handles; Linux dmabuf + sync_file; macOS IOSurface + MTLSharedEvent via MoltenVK)"
+    ${_bc_vk_default})
 
 if(BROCOMPOSITOR_WITH_VULKAN)
     if(NOT BROCOMPOSITOR_VULKAN_INCLUDE_DIR)
@@ -230,10 +283,12 @@ if(BROCOMPOSITOR_WITH_VULKAN)
     endif()
     if(WIN32)
         set(_bc_vk_platform src/vulkan/importer_win32.cpp)
+    elseif(APPLE)
+        set(_bc_vk_platform src/vulkan/importer_apple.cpp)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(_bc_vk_platform src/vulkan/importer_linux.cpp)
     else()
-        message(FATAL_ERROR "The Vulkan importer implements Win32 and Linux handle types only")
+        message(FATAL_ERROR "The Vulkan importer implements Win32, Linux and Apple handle types only")
     endif()
     add_library(brocompositor_vulkan STATIC src/vulkan/importer.cpp ${_bc_vk_platform})
     add_library(brocompositor::vulkan ALIAS brocompositor_vulkan)

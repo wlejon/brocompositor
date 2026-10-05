@@ -1,7 +1,11 @@
 // Integer geometry shared by every brocompositor layer. All coordinates are
 // physical pixels in the desktop's global coordinate space (on Windows, the
 // per-monitor-DPI-aware virtual screen; on Linux, the compositor's layout
-// space). Nothing here depends on a platform.
+// space). The exception is macOS, whose global display space has no single
+// pixel grid across mixed-scale displays: there coordinates are Quartz
+// global display points (origin at the top-left of the primary display, y
+// down), and MonitorSnapshot::dpi / 96 is the display's points-to-pixels
+// scale. Nothing here depends on a platform.
 #pragma once
 
 #include <algorithm>

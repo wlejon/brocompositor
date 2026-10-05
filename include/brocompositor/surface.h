@@ -22,7 +22,9 @@
 // handle into Vulkan does not transfer ownership, and the imported memory
 // remains valid after the source closes its handle. POSIX fds (Linux) stay
 // valid while the image is listed or leased; the host dup()s them before an
-// import that takes ownership (the Vulkan importer does).
+// import that takes ownership (the Vulkan importer does). macOS IOSurfaceRef
+// and MTLSharedEvent handles stay valid while the image is listed or leased
+// (the timeline for the source's lifetime); an import retains what it needs.
 //
 // An image is never written while leased, so a host that holds a lease can
 // sample it for as long as it wants; the source drops frames rather than
@@ -53,6 +55,9 @@ enum class ImageHandleType : uint32_t {
                          //  -> VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT
     DmaBuf = 2,          // Linux: per-plane fds + DRM format modifier
     ShmFd = 3,           // Linux: wl_shm pool fd + offset/stride (CPU upload path)
+    IOSurface = 4,       // macOS: IOSurfaceRef (handle.value, owned by the source) whose
+                         // IOSurfaceID is SharedImage::iosurface_id
+                         //  -> VkImportMetalIOSurfaceInfoEXT (VK_EXT_metal_objects)
 };
 
 enum class SyncHandleType : uint32_t {
@@ -61,19 +66,24 @@ enum class SyncHandleType : uint32_t {
                        // Frame::wait_value (VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D11_FENCE_BIT
                        // imported as a VK_SEMAPHORE_TYPE_TIMELINE semaphore)
     SyncFileFd = 2,    // Linux: a per-frame sync_file in Frame::sync_fd
+    MetalSharedEvent = 3,  // macOS: id<MTLSharedEvent> (handle.value, owned by the source); a
+                           // timeline like D3D11FenceNT: GPU-wait for >= Frame::wait_value
+                           // (VkImportMetalSharedEventInfoEXT on a timeline semaphore)
 };
 
 // Identifies the GPU an image lives on. The host must import on the same
-// adapter: compare with VkPhysicalDeviceIDProperties::deviceLUID (Windows) or
-// the DRM render node (Linux).
+// adapter: compare with VkPhysicalDeviceIDProperties::deviceLUID (Windows),
+// the DRM render node (Linux) or the MTLDevice registryID (macOS; MoltenVK
+// reports it big-endian in deviceLUID, which vk::adapter_of() decodes).
 struct AdapterId {
     std::array<uint8_t, 8> luid{};  // Windows LUID, little-endian {LowPart, HighPart}
     uint64_t drm_render_node = 0;   // Linux: st_rdev of the render node
+    uint64_t metal_registry_id = 0; // macOS: MTLDevice.registryID
     bool operator==(const AdapterId&) const = default;
 };
 
 struct NativeHandle {
-    uint64_t value = 0;  // HANDLE on Windows, fd on POSIX (0 / -1 meaning none per platform)
+    uint64_t value = 0;  // HANDLE on Windows, fd on POSIX, an object pointer on macOS (0 / -1 meaning none per platform)
     bool operator==(const NativeHandle&) const = default;
 };
 
@@ -93,6 +103,7 @@ struct SharedImage {
     uint32_t height = 0;
     PixelFormat format = PixelFormat::Unknown;
     uint32_t drm_format = 0;  // Linux: DRM fourcc (authoritative there; `format` is its coarse mapping)
+    uint32_t iosurface_id = 0;  // macOS: IOSurfaceGetID (for IOSurfaceLookup across processes)
     AdapterId adapter;
 };
 
@@ -107,7 +118,7 @@ struct Frame {
     uint64_t image_id = 0;
     Size content;           // valid region from (0,0); may be smaller than the image
     std::vector<Rect> damage;  // in image pixels; empty means "everything"
-    uint64_t wait_value = 0;   // D3D11FenceNT: GPU-wait for timeline >= wait_value
+    uint64_t wait_value = 0;   // D3D11FenceNT / MetalSharedEvent: GPU-wait for timeline >= wait_value
     NativeHandle sync_fd;      // SyncFileFd: per-frame fence
     int64_t timestamp_ns = 0;  // presentation/arrival time, source clock
 };

@@ -15,6 +15,8 @@ endfunction()
 bc_test(test_layout SOURCES core/test_layout.cpp LIBS brocompositor_core)
 bc_test(test_window_manager SOURCES core/test_window_manager.cpp LIBS brocompositor_core)
 bc_test(test_event_queue SOURCES core/test_event_queue.cpp LIBS brocompositor_core)
+# Shell-role plumbing (crash-recovery journal, per-process workers): portable.
+bc_test(test_shell_common SOURCES core/test_shell_common.cpp LIBS brocompositor_shell_common)
 
 if(TARGET brocompositor_wayland)
     # The scripted Wayland client the server tests drive (plus real
@@ -71,6 +73,48 @@ if(TARGET brocompositor_wayland)
     endif()
 endif()
 
+if(APPLE)
+    # A regular AppKit application that owns the windows the backend tests
+    # manage (every test works on foreign windows it created itself).
+    add_executable(bc_mac_test_app mac/test_app.mm)
+    target_compile_options(bc_mac_test_app PRIVATE -fobjc-arc)
+    set_target_properties(bc_mac_test_app PROPERTIES OBJCXX_STANDARD 20)
+    target_link_libraries(bc_mac_test_app PRIVATE "-framework AppKit")
+
+    add_library(bc_mac_harness STATIC mac/harness.cpp)
+    target_include_directories(bc_mac_harness PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(bc_mac_harness PUBLIC BC_MAC_TEST_APP="$<TARGET_FILE:bc_mac_test_app>")
+    target_link_libraries(bc_mac_harness PUBLIC brocompositor_mac "-framework CoreGraphics"
+        "-framework ApplicationServices")
+    add_dependencies(bc_mac_harness bc_mac_test_app)
+    brocompositor_warnings(bc_mac_harness)
+
+    # A shell host the recovery test kills with SIGKILL.
+    add_executable(bc_mac_shell_child mac/shell_child.cpp)
+    target_include_directories(bc_mac_shell_child PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(bc_mac_shell_child PRIVATE brocompositor_mac)
+    brocompositor_warnings(bc_mac_shell_child)
+
+    foreach(t permissions lifecycle displays ops focus recovery)
+        bc_test(test_mac_${t} SOURCES mac/test_mac_${t}.cpp LIBS bc_mac_harness)
+        # They drive real desktop state (windows, focus); one at a time.
+        set_tests_properties(test_mac_${t} PROPERTIES RUN_SERIAL TRUE)
+    endforeach()
+    target_compile_definitions(test_mac_recovery PRIVATE BC_MAC_SHELL_CHILD="$<TARGET_FILE:bc_mac_shell_child>")
+    add_dependencies(test_mac_recovery bc_mac_shell_child)
+
+    if(TARGET brocompositor_vulkan)
+        bc_test(test_mac_surface_vulkan SOURCES mac/test_mac_surface_vulkan.cpp mac/vk_mac.cpp
+            LIBS brocompositor_mac brocompositor_vulkan "-framework IOSurface" "-framework CoreFoundation")
+        bc_test(test_mac_capture SOURCES mac/test_mac_capture.cpp mac/vk_mac.cpp
+            LIBS bc_mac_harness brocompositor_vulkan)
+        foreach(t test_mac_surface_vulkan test_mac_capture)
+            target_compile_options(${t} PRIVATE -Wno-missing-field-initializers)
+            set_tests_properties(${t} PROPERTIES RUN_SERIAL TRUE)
+        endforeach()
+    endif()
+endif()
+
 if(WIN32)
     # A separate process that owns the windows the backend tests manage, so
     # every test exercises the real cross-process (foreign window) paths and
@@ -88,7 +132,14 @@ if(WIN32)
     add_dependencies(bc_win_harness bc_test_app)
     brocompositor_warnings(bc_win_harness)
 
-    foreach(t lifecycle ops focus appbar integration capture)
+    # A shell host the recovery test kills with TerminateProcess.
+    add_executable(bc_win_shell_child win/shell_child.cpp)
+    target_include_directories(bc_win_shell_child PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(bc_win_shell_child PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(bc_win_shell_child PRIVATE brocompositor_win)
+    brocompositor_warnings(bc_win_shell_child)
+
+    foreach(t lifecycle ops focus appbar integration capture recovery)
         if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/win/test_win_${t}.cpp)
             continue()
         endif()
@@ -100,6 +151,9 @@ if(WIN32)
     if(TARGET test_win_capture)
         target_link_libraries(test_win_capture PRIVATE d3d11 dxgi)
     endif()
+    target_compile_definitions(test_win_recovery PRIVATE BC_WIN_SHELL_CHILD="$<TARGET_FILE:bc_win_shell_child>")
+    target_link_libraries(test_win_recovery PRIVATE shell32)
+    add_dependencies(test_win_recovery bc_win_shell_child)
 
     if(TARGET brocompositor_vulkan)
         bc_test(test_vulkan_import SOURCES win/test_vulkan_import.cpp win/vk_context.cpp

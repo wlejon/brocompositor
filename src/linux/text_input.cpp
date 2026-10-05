@@ -42,13 +42,15 @@ void Server::init_text_input() {
         TextInputRec* r = rec.get();
         r->ti = ti;
         r->enable.connect(&ti->events.enable, [this, ti](void*) {
-            if (!input_method || ti != active_text_input()) return;
+            if (!input_method || ti != active_text_input() || !input_method_allowed()) return;
             wlr_input_method_v2_send_activate(input_method);
             send_im_state(input_method, ti);
         });
         r->commit.connect(&ti->events.commit, [this, ti](void*) {
             if (ti != active_text_input()) return;
-            if (input_method) send_im_state(input_method, ti);
+            // A disallowed input method does not even see the text (a lock
+            // screen's password field).
+            if (input_method && input_method_allowed()) send_im_state(input_method, ti);
             // The cursor rectangle moves the IME popups.
             for (auto& [p, pr] : input_popups) {
                 wlr_box b = ti->current.cursor_rectangle;
@@ -85,7 +87,8 @@ void Server::init_text_input() {
         input_method = im;
         im_commit.connect(&im->events.commit, [this, im](void*) {
             wlr_text_input_v3* ti = active_text_input();
-            if (!ti) return;
+            // While locked an input method types into nothing unless allowed.
+            if (!ti || !input_method_allowed()) return;
             if (im->current.preedit.text)
                 wlr_text_input_v3_send_preedit_string(ti, im->current.preedit.text, im->current.preedit.cursor_begin,
                                                       im->current.preedit.cursor_end);
@@ -140,11 +143,15 @@ void Server::init_text_input() {
                 wlr_text_input_v3_send_done(ti);
             }
         });
-        if (wlr_text_input_v3* ti = active_text_input()) {
+        if (wlr_text_input_v3* ti = active_text_input(); ti && input_method_allowed()) {
             wlr_input_method_v2_send_activate(im);
             send_im_state(im, ti);
         }
     });
+}
+
+bool Server::input_method_allowed() const {
+    return !input_method || client_input_allowed(client_pid(wl_resource_get_client(input_method->resource)));
 }
 
 void Server::text_input_focus(wlr_surface* focus) {

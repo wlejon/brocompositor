@@ -86,6 +86,22 @@ struct DmabufFormat {
     std::vector<uint64_t> modifiers;  // DRM_FORMAT_MOD_*
 };
 
+// Input that clients synthesize while the session is locked: virtual
+// keyboards (zwp_virtual_keyboard_v1: wtype, an input method's keyboard,
+// remote-desktop agents), virtual pointers (zwlr_virtual_pointer_v1:
+// wlrctl, ydotool-style tools) and input-method text (input-method-v2
+// commits). By default none of it reaches anything while locked: such
+// devices produce no input events, keys and buttons they produced before
+// the lock are dropped if the host routes them after it, and the input
+// method is neither activated for lock surfaces nor allowed to commit text.
+// Physical devices and the host's own inject_*() are unaffected. A host
+// that trusts a client (an on-screen keyboard on the lock screen, say)
+// allows it here, by process id, or allows every client.
+struct LockedVirtualInput {
+    bool all_clients = false;
+    std::vector<uint32_t> client_pids;
+};
+
 struct ServerConfig {
     BackendKind backend = BackendKind::Auto;
     // Socket under XDG_RUNTIME_DIR; empty: the first free "wayland-N".
@@ -131,6 +147,10 @@ struct ServerConfig {
     // Log level for wlroots (0 silent, 1 error, 2 info, 3 debug); overridden
     // by BROCOMPOSITOR_WLR_LOG.
     int wlr_log_level = 1;
+
+    // Which clients' synthesized input may act while the session is locked
+    // (default: none). Changeable later with set_locked_virtual_input().
+    LockedVirtualInput locked_virtual_input;
 };
 
 struct SurfaceState {
@@ -300,6 +320,9 @@ public:
     // ---- session lock (ext-session-lock-v1) ----
     // There is deliberately no host-side unlock: only the lock client does.
     LockState session_lock_state() const;
+    // Replaces ServerConfig::locked_virtual_input (takes effect at once,
+    // also for a lock already held).
+    void set_locked_virtual_input(const LockedVirtualInput& policy);
     std::vector<SurfaceNode> lock_surface_tree(MonitorId output) const;  // relative to the output origin
     std::optional<SurfaceHit> hit_test_lock(MonitorId output, double ox, double oy) const;
 

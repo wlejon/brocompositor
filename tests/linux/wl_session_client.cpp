@@ -7,8 +7,11 @@
 //                    stdin: commit <text> | preedit <text> | grab | popup
 //   --lock           ext-session-lock-v1 with a surface per output (colour
 //                    --color): locked / finished / lock_configure <w> <h> /
-//                    key <code> <state> / enter <x> <y>
+//                    key <code> <state> / enter <x> <y> / button <b> <state>
 //                    stdin: unlock (unlocked) | die (exits without unlocking)
+//                    --text-input: a text-input-v3 on the lock surface
+//                    (enabled with surrounding text "secret"): ti_enter /
+//                    ti_preedit <text> / ti_commit <text>.
 //   --toplevels      ext-foreign-toplevel-list: toplevel <app_id> <title> /
 //                    toplevel_closed <app_id>
 //   --capture output | --capture toplevel:<app_id>
@@ -23,6 +26,7 @@
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
 #include "input-method-unstable-v2-client-protocol.h"
+#include "text-input-unstable-v3-client-protocol.h"
 
 #include <sys/mman.h>
 #include <unistd.h>
@@ -98,6 +102,9 @@ struct App {
     // --lock
     ext_session_lock_v1* lock = nullptr;
     std::vector<std::unique_ptr<LockSurface>> lock_surfaces;
+    bool want_text_input = false;
+    zwp_text_input_manager_v3* ti_mgr = nullptr;
+    zwp_text_input_v3* ti = nullptr;
     // --toplevels / --capture toplevel:<app_id>
     struct Handle {
         App* app = nullptr;
@@ -361,6 +368,26 @@ bool start_capture(App& a) {
     return true;
 }
 
+// A password-field-like text input on the lock surface.
+const zwp_text_input_v3_listener ti_listener = {
+    [](void*, zwp_text_input_v3* ti, wl_surface*) {
+        out("ti_enter");
+        zwp_text_input_v3_enable(ti);
+        zwp_text_input_v3_set_surrounding_text(ti, "secret", 6, 6);
+        zwp_text_input_v3_commit(ti);
+    },
+    [](void*, zwp_text_input_v3* ti, wl_surface*) {
+        zwp_text_input_v3_disable(ti);
+        zwp_text_input_v3_commit(ti);
+    },
+    [](void*, zwp_text_input_v3*, const char* text, int32_t, int32_t) {
+        if (text) out("ti_preedit %s", text);
+    },
+    [](void*, zwp_text_input_v3*, const char* text) { out("ti_commit %s", text ? text : ""); },
+    [](void*, zwp_text_input_v3*, uint32_t, uint32_t) {},
+    [](void*, zwp_text_input_v3*, uint32_t) {},
+};
+
 // ---------------------------------------------------------------- registry
 
 const wl_seat_listener seat_listener = {
@@ -394,6 +421,8 @@ const wl_registry_listener registry_listener = {
         else if (is(wl_output_interface)) a.outputs.push_back(static_cast<wl_output*>(bind(wl_output_interface, 3)));
         else if (is(zwp_input_method_manager_v2_interface))
             a.im_mgr = static_cast<zwp_input_method_manager_v2*>(bind(zwp_input_method_manager_v2_interface, 1));
+        else if (is(zwp_text_input_manager_v3_interface))
+            a.ti_mgr = static_cast<zwp_text_input_manager_v3*>(bind(zwp_text_input_manager_v3_interface, 1));
         else if (is(ext_session_lock_manager_v1_interface))
             a.lock_mgr = static_cast<ext_session_lock_manager_v1*>(bind(ext_session_lock_manager_v1_interface, 1));
         else if (is(ext_foreign_toplevel_list_v1_interface)) {
@@ -425,6 +454,7 @@ int main(int argc, char** argv) {
         else if (k == "--capture") mode = k, a.capture = next();
         else if (k == "--color") a.color = uint32_t(std::strtoul(next().c_str(), nullptr, 16));
         else if (k == "--frames") a.frames_wanted = std::atoi(next().c_str());
+        else if (k == "--text-input") a.want_text_input = true;
         else if (k == "--pixel") {
             int x = 0, y = 0;
             if (std::sscanf(next().c_str(), "%d,%d", &x, &y) == 2) a.pixels.emplace_back(x, y);
@@ -451,6 +481,11 @@ int main(int argc, char** argv) {
         out("im_ready");
     } else if (mode == "--lock") {
         if (!a.lock_mgr) return out("error no-session-lock"), 2;
+        if (a.want_text_input) {
+            if (!a.ti_mgr) return out("error no-text-input"), 2;
+            a.ti = zwp_text_input_manager_v3_get_text_input(a.ti_mgr, a.seat);
+            zwp_text_input_v3_add_listener(a.ti, &ti_listener, &a);
+        }
         start_lock(a);
     } else if (mode == "--toplevels") {
         if (!a.toplevel_list) return out("error no-toplevel-list"), 2;

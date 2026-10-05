@@ -1,5 +1,6 @@
 // Private: the importer's function table and the per-platform entry points
-// (importer_win32.cpp / importer_linux.cpp) behind the common Importer.
+// (importer_win32.cpp / importer_linux.cpp / importer_apple.cpp) behind the
+// common Importer.
 #pragma once
 
 // Every importer TU sees the same platform types (the Impl layout depends on them).
@@ -7,6 +8,10 @@
 #include <windows.h>
 #ifndef VK_USE_PLATFORM_WIN32_KHR
 #define VK_USE_PLATFORM_WIN32_KHR 1
+#endif
+#elif defined(__APPLE__)
+#ifndef VK_USE_PLATFORM_METAL_EXT
+#define VK_USE_PLATFORM_METAL_EXT 1
 #endif
 #endif
 
@@ -41,6 +46,9 @@ namespace brocompositor::vk {
 #define BC_VK_PLATFORM_DEVICE_FNS(X)       \
     X(vkGetMemoryWin32HandlePropertiesKHR) \
     X(vkImportSemaphoreWin32HandleKHR)
+#elif defined(__APPLE__)
+// MoltenVK: the import structures chain into vkCreateImage / vkCreateSemaphore.
+#define BC_VK_PLATFORM_DEVICE_FNS(X)
 #else
 #define BC_VK_PLATFORM_DEVICE_FNS(X) \
     X(vkGetMemoryFdPropertiesKHR)    \

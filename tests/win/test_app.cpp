@@ -7,12 +7,14 @@
 //   title <name> <text...>                                                 -> ok
 //   color <name> <rrggbb>                                                  -> ok
 //   move <name> <x> <y> <w> <h>        (outer window rect)                 -> ok
+//   hang <ms>      replies, then the UI thread stops pumping for <ms>      -> ok
 //   exit
 //
 // The app exits when stdin closes, so a crashed test never leaves windows.
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <sstream>
@@ -155,11 +157,15 @@ int main() {
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         if (msg.hwnd == nullptr && msg.message == WM_APP) {
             auto* line = reinterpret_cast<std::string*>(msg.lParam);
-            std::string reply = run(*line);
+            // hang <ms>: reply, then stop pumping messages (a hung application).
+            int hang_ms = 0;
+            if (line->rfind("hang ", 0) == 0) hang_ms = std::atoi(line->c_str() + 5);
+            std::string reply = hang_ms > 0 ? "ok" : run(*line);
             delete line;
             std::fwrite(reply.data(), 1, reply.size(), stdout);
             std::fputc('\n', stdout);
             std::fflush(stdout);
+            if (hang_ms > 0) Sleep(DWORD(hang_ms));
             continue;
         }
         if (msg.hwnd == nullptr && msg.message == WM_APP + 1) break;

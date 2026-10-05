@@ -71,7 +71,9 @@ void gamma(Host& host) {
     uint16_t r = g->ramps[255], b = g->ramps[2 * 256 + 255];
     CHECK(r > b);         // warm: blue cut more than red
     CHECK(b < 60000);     // not the identity ramp
-    CHECK(!host.server_events_of<GammaChanged>().empty());
+    // The mirror gamma() reads is updated before the event reaches the
+    // host's queue, so the event may land a moment later.
+    CHECK(host.wait([&] { return !host.server_events_of<GammaChanged>().empty(); }));
     ws->kill_now();
     CHECK(ws->wait_exit(5000));
     CHECK(host.wait([&] {

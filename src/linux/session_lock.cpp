@@ -9,9 +9,58 @@
 // If the lock client dies without unlocking the session stays locked
 // (Abandoned); only a new lock client can unlock it. There is no host-side
 // unlock.
+//
+// Input other clients synthesize (virtual keyboards and pointers, input
+// method commits) acts on nothing while locked unless the host allows that
+// client (LockedVirtualInput): devices are muted at the source, and keys or
+// buttons they produced just before the lock that the host routes after it
+// are recognised by their stamps and refused.
 #include "linux/server_impl.h"
 
 namespace brocompositor::wl {
+
+struct ServerBackend::Impl : Server {};
+
+namespace {
+constexpr size_t kMaxStamps = 256;
+constexpr uint32_t kStampWindowMs = 5000;
+}  // namespace
+
+bool Server::client_input_allowed(uint32_t pid) const {
+    if (!locked()) return true;
+    const LockedVirtualInput& p = config.locked_virtual_input;
+    if (p.all_clients) return true;
+    for (uint32_t allowed : p.client_pids)
+        if (allowed == pid && pid != 0) return true;
+    return false;
+}
+
+void Server::stamp_client_input(const ClientInputStamp& s) {
+    client_stamps.push_back(s);
+    while (client_stamps.size() > kMaxStamps ||
+           (!client_stamps.empty() && s.time_msec - client_stamps.front().time_msec > kStampWindowMs))
+        client_stamps.pop_front();
+}
+
+bool Server::routed_client_input_refused(uint32_t time_msec, uint32_t code, bool pressed, bool button) const {
+    if (!locked()) return false;
+    for (const ClientInputStamp& s : client_stamps)
+        if (s.time_msec == time_msec && s.code == code && s.pressed == pressed && s.button == button)
+            return !client_input_allowed(s.pid);
+    return false;
+}
+
+void ServerBackend::set_locked_virtual_input(const LockedVirtualInput& policy) {
+    Server* s = impl_.get();
+    s->dispatcher->post([s, policy] {
+        s->config.locked_virtual_input = policy;
+        // An input method that just lost its permission stops at once.
+        if (s->input_method && s->locked() && !s->input_method_allowed() && s->active_text_input()) {
+            wlr_input_method_v2_send_deactivate(s->input_method);
+            wlr_input_method_v2_send_done(s->input_method);
+        }
+    });
+}
 
 void Server::set_lock_state(LockState state) {
     if (state == lock_state) return;

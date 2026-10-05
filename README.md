@@ -1,7 +1,10 @@
 # brocompositor
 
+[![CI](https://github.com/wlejon/brocompositor/actions/workflows/ci.yml/badge.svg)](https://github.com/wlejon/brocompositor/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/wlejon/brocompositor/actions/workflows/codeql.yml/badge.svg)](https://github.com/wlejon/brocompositor/actions/workflows/codeql.yml)
+
 Window-management and compositing substrate for a desktop environment built on
-the bro runtime. A standalone C++20 library: no dependency on bro or bronze, no
+the [bro](https://github.com/wlejon/bro) runtime. A standalone C++20 library: no dependency on bro or bronze, no
 JS binding, its own CMake and ctest.
 
 ## Structure
@@ -19,8 +22,8 @@ backends also share their asynchronous operation model and crash-recovery
 journal (`shell.h`, `src/shell/`). Nothing else is pretended to be common.
 
 Displays follow the same split, through the sibling library
-[brodisplays](../brodisplays) (resolved as `../brodisplays`, overridable
-with `-DBRODISPLAYS_DIR=<path>`):
+[brodisplays](https://github.com/wlejon/brodisplays) (see [Building](#building)
+for how it is found):
 
 * **Windows, macOS** — the OS owns the displays and brocompositor observes
   them. Which displays exist, their bounds, DPI / scale, which is primary,
@@ -423,16 +426,28 @@ host leases the newest frame (`acquire`), GPU-waits its sync, samples, and
 
 ## Building
 
+brodisplays is found the way every bro sibling is: an existing `brodisplays`
+target (a superbuild already added it), else a checkout beside this one
+(`../brodisplays`, overridable with `-DBRODISPLAYS_DIR=<path>`), else the
+`third_party/brodisplays` submodule. Either
+
+```bash
+git clone https://github.com/wlejon/brodisplays          # beside brocompositor
+# or, inside brocompositor:
+git submodule update --init --recursive
+```
+
 Windows (Visual Studio generator, one build dir, config at build time):
 
 ```bash
-cmake -B build -DCMAKE_PREFIX_PATH=D:/vcpkg/installed/x64-windows   # Vulkan headers for the importer
+cmake -B build -DCMAKE_PREFIX_PATH=<vcpkg>/installed/x64-windows   # Vulkan headers for the importer
 cmake --build build --config Release
 ctest --test-dir build -C Release
 ```
 
-The Vulkan importer builds when Vulkan headers are found (`VULKAN_SDK` or
-`CMAKE_PREFIX_PATH`); it never links a loader.
+The Vulkan importer builds when Vulkan headers are found (`VULKAN_SDK`,
+`CMAKE_PREFIX_PATH`, or `-DBROCOMPOSITOR_VULKAN_INCLUDE_DIR=<dir>`); it never
+links a loader.
 
 Linux (GCC 12+ or Clang; Debian trixie package names):
 
@@ -445,9 +460,15 @@ ctest --test-dir build-release
 
 `BROCOMPOSITOR_WITH_WAYLAND` (default ON when wlroots-0.18 is found) builds
 the server role; protocol headers are generated with wayland-scanner at
-build time. The Windows and macOS builds need `../brodisplays` (or
-`-DBRODISPLAYS_DIR`); the Linux build uses it only for `test_wl_brodisplays`
-(add `libxcb-randr0-dev libxau-dev` for it).
+build time. Without wlroots 0.18 (Ubuntu 24.04 ships 0.17) the Linux build
+is the portable core, the shell plumbing and the Vulkan importer, and CI
+builds it that way on Ubuntu; the whole server builds and is tested on Debian
+trixie. The Windows and macOS builds need brodisplays; the Linux build uses
+it only for `test_wl_brodisplays` (add `libxcb-randr0-dev libxau-dev` for it).
+The clients the Linux tests drive are listed under [Tests](#tests); CI
+installs them with `xwayland xvfb xterm x11-apps xclip xsel weston foot
+wl-clipboard wlr-randr gtk-3-examples qt6-base-examples swaylock swayidle grim
+wtype wlrctl wlsunset seatd mesa-vulkan-drivers` (`.github/ci/linux-full.sh`).
 
 macOS (Apple clang, Command Line Tools are enough; macOS 12.3+ for capture):
 
@@ -523,7 +544,7 @@ example and Xvfb when installed (missing programs are skipped, not failed).
 | test_wl_capture | grim (full + region) pixels, ext-image-copy-capture output frames paced by damage, toplevel source via the host, host_capture_copies |
 | test_wl_taskbar | ext-foreign-toplevel-list, wlrctl toplevel list/find/focus/minimize/close, xdg-activation |
 | test_wl_session | swayidle idle/resume, idle inhibitor, wlsunset gamma ramps + restore, oversize Wayland placement |
-| test_wl_brodisplays | brodisplays as a client: outputs (names, modes, layout, primary) as the server has them, mode change and test-then-revert reaching the outputs, night light as gamma ramps, released on disable and on disconnect (built when `../brodisplays` and its xcb / xcb-randr / xau dependencies are present) |
+| test_wl_brodisplays | brodisplays as a client: outputs (names, modes, layout, primary) as the server has them, mode change and test-then-revert reaching the outputs, night light as gamma ramps, released on disable and on disconnect (built when brodisplays and its xcb / xcb-randr / xau dependencies are present) |
 
 The XWayland tests set `XWAYLAND_NO_GLAMOR=1`: glamor cannot render into
 LINEAR dmabufs on NVIDIA, and software rendering is enough for the checks.

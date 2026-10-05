@@ -1,0 +1,227 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# brocompositor resolves its one sibling, brodisplays, from ../brodisplays
+# first (see the BRODISPLAYS_DIR block in CMakeLists.txt), so the jobs
+# reconstruct that layout in the runner workspace before configuring:
+#
+#     $GITHUB_WORKSPACE/
+#       brocompositor/   <- this repo, checked out into a named path, not the root
+#       brodisplays/
+#
+# Hence `path:` on the checkouts and `cmake -S brocompositor`. brodisplays is
+# taken from main, which mirrors how the stack is developed (everything tracks
+# main), so this CI also catches a breaking change landing there. The
+# `submodule` job builds the other way, from third_party/brodisplays.
+#
+# Where each part is built and tested:
+#
+#   core, shell common   every job
+#   Windows shell        windows-msvc (Release, Debug), submodule
+#   macOS shell          macos-arm64
+#   Wayland server       wayland-* and coverage, in debian:trixie
+#   Vulkan importer      every job (Windows from Khronos' headers, macOS from
+#                        Homebrew with MoltenVK, Linux from libvulkan-dev and
+#                        lavapipe)
+#
+# The Wayland server needs wlroots 0.18. Ubuntu 24.04 ships 0.17, so the
+# Ubuntu jobs build only what does not need it (core, shell common, Vulkan
+# importer) and say so in their names. Debian trixie packages wlroots 0.18
+# (libwlroots-0.18-dev), so the whole server builds and its tests run there,
+# under wlroots' headless backend, against the third-party clients they drive
+# (weston demos, foot, GTK 3, Qt 6, XWayland, wl-clipboard, grim, ...). It runs
+# as `docker run` from an Ubuntu host rather than a `container:` job so the
+# host can load vkms first: test_wl_drm takes DRM master on that virtual card.
+#
+# Every test that cannot run on a runner (no Accessibility or Screen Recording
+# grant on macOS, no Vulkan device on Windows, no vkms) exits 77 and ctest
+# lists it as skipped, never as passed.
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc (no wlroots 0.18),   os: ubuntu-24.04, cc: gcc,   cxx: g++,     config: Release }
+          - { name: linux-clang (no wlroots 0.18), os: ubuntu-24.04, cc: clang, cxx: clang++, config: Release }
+          - { name: windows-msvc,                  os: windows-2022,                          config: Release }
+          # Debug CRT: iterator debugging and the library's own assert()s.
+          - { name: windows-msvc-debug,            os: windows-2022,                          config: Debug }
+          - { name: macos-arm64,                   os: macos-15,                              config: Release }
+    env:
+      # macOS: test_mac_displays' opt-in mode switch (per-process, undone at
+      # exit); hosted runners are disposable.
+      BC_MAC_DISPLAY_MODE_TEST: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: brocompositor
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brodisplays
+          path: brodisplays
+
+      - uses: actions/checkout@v7
+        if: runner.os == 'Windows'
+        with:
+          repository: KhronosGroup/Vulkan-Headers
+          path: vulkan-headers
+
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ninja-build pkg-config libvulkan-dev
+
+      - name: Install packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja vulkan-headers vulkan-loader molten-vk
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows)
+              cmake -S brocompositor -B build \
+                -DBROCOMPOSITOR_VULKAN_INCLUDE_DIR="$GITHUB_WORKSPACE/vulkan-headers/include" ;;
+            macOS)
+              cmake -S brocompositor -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+                -DCMAKE_PREFIX_PATH="$(brew --prefix)" ;;
+            *)
+              cmake -S brocompositor -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }} ;;
+          esac
+          grep -q 'BROCOMPOSITOR_WITH_VULKAN:BOOL=ON' build/CMakeCache.txt
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+
+  # ── Wayland server ────────────────────────────────────────────────────────
+  wayland:
+    name: wayland-${{ matrix.cc }} · debian-trixie
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { cc: gcc,   cxx: g++ }
+          - { cc: clang, cxx: clang++ }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: brocompositor
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brodisplays
+          path: brodisplays
+
+      - name: Load vkms
+        id: vkms
+        run: brocompositor/.github/ci/load-vkms.sh
+
+      - name: Build and test (debian:trixie)
+        run: |
+          docker run --rm --shm-size=1g -v "$GITHUB_WORKSPACE:/w" \
+            ${{ steps.vkms.outputs.device && '--device /dev/dri' || '' }} \
+            -e CC=${{ matrix.cc }} -e CXX=${{ matrix.cxx }} -e CONFIG=Release -e COVERAGE=OFF \
+            -e BROCOMPOSITOR_DRM_DEVICE=${{ steps.vkms.outputs.device }} \
+            debian:trixie bash /w/brocompositor/.github/ci/linux-full.sh
+
+  # ── Submodule fallback ────────────────────────────────────────────────────
+  #
+  # No sibling checkout: brodisplays comes from the third_party/brodisplays
+  # submodule at the commit this repo pins. On Windows, where the shell backend
+  # cannot build without it. The configure step checks it really took that
+  # path rather than finding a stray ../brodisplays.
+  submodule:
+    name: Submodule fallback · windows-2022
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: brocompositor
+          submodules: recursive
+
+      - name: Configure
+        shell: bash
+        run: |
+          test ! -e brodisplays
+          cmake -S brocompositor -B build | tee configure.log
+          grep -q 'brodisplays from .*third_party/brodisplays (submodule)' configure.log
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  # ── Coverage ──────────────────────────────────────────────────────────────
+  #
+  # The Wayland server and the portable core, in the same debian:trixie
+  # environment as the wayland jobs. Debug (-O0), so this is also the Linux job
+  # where assert()s are live. The Windows and macOS backends are exercised by
+  # the test matrix, not measured.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: brocompositor
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brodisplays
+          path: brodisplays
+
+      - name: Load vkms
+        id: vkms
+        run: brocompositor/.github/ci/load-vkms.sh
+
+      - name: Build, test and report (debian:trixie)
+        run: |
+          docker run --rm --shm-size=1g -v "$GITHUB_WORKSPACE:/w" \
+            ${{ steps.vkms.outputs.device && '--device /dev/dri' || '' }} \
+            -e CC=gcc -e CXX=g++ -e CONFIG=Debug -e COVERAGE=ON \
+            -e BROCOMPOSITOR_DRM_DEVICE=${{ steps.vkms.outputs.device }} \
+            debian:trixie bash /w/brocompositor/.github/ci/linux-full.sh
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo '## Coverage — `src/` + `include/brocompositor/`'
+            echo
+            echo 'Linux (Wayland server, portable core, Vulkan importer); the Windows and macOS backends are exercised by the test matrix, not measured.'
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage-html/
+          retention-days: 14

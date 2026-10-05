@@ -22,6 +22,18 @@ endif()
 
 option(BROCOMPOSITOR_BUILD_TESTS "Build the brocompositor tests" ${_bc_top_level})
 
+# Coverage. Scoped to a top-level build: a consumer that add_subdirectory()s
+# brocompositor has no business having its own build instrumented from in here.
+option(BROCOMPOSITOR_COVERAGE "Instrument the build for gcov coverage (GCC/Clang)" OFF)
+if(BROCOMPOSITOR_COVERAGE AND _bc_top_level)
+    if(MSVC)
+        message(FATAL_ERROR "BROCOMPOSITOR_COVERAGE requires GCC or Clang (gcov instrumentation)")
+    endif()
+    add_compile_options(--coverage -O0 -g)
+    add_link_options(--coverage)
+    message(STATUS "brocompositor: coverage instrumentation ON (-O0)")
+endif()
+
 if(MSVC AND _bc_top_level)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
@@ -72,23 +84,36 @@ brocompositor_warnings(brocompositor_shell_common)
 # display server: it owns its outputs and publishes them (wl_output,
 # wlr-output-management, wlr-gamma-control), and brodisplays is one of its
 # clients; there it is needed only by the integration test.
-# Resolved like bro's siblings: an existing `brodisplays` target wins,
-# otherwise ../brodisplays, overridable with -DBRODISPLAYS_DIR=<path>.
+# Resolved like every bro sibling: an existing `brodisplays` target (a
+# superbuild already added it) wins; otherwise a standalone checkout beside
+# the top-level project (../brodisplays, overridable with
+# -DBRODISPLAYS_DIR=<path>); otherwise the top-level project's
+# third_party/brodisplays submodule (`git submodule update --init --recursive`).
 set(_bc_need_brodisplays OFF)
 if(WIN32 OR APPLE)
     set(_bc_need_brodisplays ON)
 endif()
+set(_bc_brodisplays_src "")
 if(NOT TARGET brodisplays)
-    get_filename_component(_bc_brodisplays_default "${CMAKE_CURRENT_SOURCE_DIR}/../brodisplays" ABSOLUTE)
-    set(BRODISPLAYS_DIR "${_bc_brodisplays_default}" CACHE PATH "Path to the brodisplays repo")
+    set(BRODISPLAYS_DIR "${CMAKE_SOURCE_DIR}/../brodisplays" CACHE PATH
+        "Path to standalone brodisplays repo (set to a missing path to force submodule fallback)")
+    if(EXISTS "${BRODISPLAYS_DIR}/CMakeLists.txt")
+        set(_bc_brodisplays_src "${BRODISPLAYS_DIR}")
+        set(_bc_brodisplays_how "")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/brodisplays/CMakeLists.txt")
+        set(_bc_brodisplays_src "${CMAKE_SOURCE_DIR}/third_party/brodisplays")
+        set(_bc_brodisplays_how " (submodule)")
+    endif()
     if(_bc_need_brodisplays)
-        if(NOT EXISTS "${BRODISPLAYS_DIR}/CMakeLists.txt")
-            message(FATAL_ERROR "brocompositor needs brodisplays: clone it beside brocompositor (../brodisplays) "
-                                "or pass -DBRODISPLAYS_DIR=<path>")
+        if(NOT _bc_brodisplays_src)
+            message(FATAL_ERROR
+                "brodisplays not found at ${BRODISPLAYS_DIR} or ${CMAKE_SOURCE_DIR}/third_party/brodisplays. "
+                "Clone https://github.com/wlejon/brodisplays next to this repo, run "
+                "`git submodule update --init --recursive`, or override with -DBRODISPLAYS_DIR=...")
         endif()
-        message(STATUS "brocompositor: brodisplays from ${BRODISPLAYS_DIR}")
+        message(STATUS "brocompositor: brodisplays from ${_bc_brodisplays_src}${_bc_brodisplays_how}")
         set(BRODISPLAYS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        add_subdirectory("${BRODISPLAYS_DIR}" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
+        add_subdirectory("${_bc_brodisplays_src}" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
     endif()
 endif()
 
@@ -341,12 +366,12 @@ endif()
 # Linux: brodisplays only for the test that runs it as a client of this
 # server (skipped when the repo or its X11 dependencies are missing).
 if(BROCOMPOSITOR_BUILD_TESTS AND BROCOMPOSITOR_WITH_WAYLAND AND NOT TARGET brodisplays
-   AND EXISTS "${BRODISPLAYS_DIR}/CMakeLists.txt")
+   AND _bc_brodisplays_src)
     pkg_check_modules(BC_BRODISPLAYS_DEPS QUIET xcb xcb-randr xau)
     if(BC_BRODISPLAYS_DEPS_FOUND)
-        message(STATUS "brocompositor: brodisplays (tests) from ${BRODISPLAYS_DIR}")
+        message(STATUS "brocompositor: brodisplays (tests) from ${_bc_brodisplays_src}${_bc_brodisplays_how}")
         set(BRODISPLAYS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        add_subdirectory("${BRODISPLAYS_DIR}" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
+        add_subdirectory("${_bc_brodisplays_src}" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
     else()
         message(STATUS "brocompositor: test_wl_brodisplays skipped (brodisplays needs xcb, xcb-randr, xau)")
     endif()

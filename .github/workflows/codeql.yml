@@ -1,0 +1,111 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+# The Wayland server is the reason this is worth running. Every request a
+# client sends (buffer sizes and strides, damage rectangles, surface trees,
+# clipboard payloads, gamma ramp sizes, capture regions) is untrusted input
+# that the server indexes memory with, and a bug there is a client reaching
+# into the compositor. The Windows shell backend reads window state out of
+# other processes. Out-of-bounds access and integer overflow in size
+# arithmetic are the realistic bugs, exactly what the C++ queries look for.
+#
+# Two analyses, because each backend compiles only on its own OS: Linux (the
+# Wayland server, in debian:trixie for wlroots 0.18; plus the core and the
+# Vulkan importer) and Windows (the shell backend over DWM).
+jobs:
+  analyze:
+    name: Analyze C++ (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux,   os: ubuntu-24.04, container: "debian:trixie" }
+          - { name: windows, os: windows-2022, container: "" }
+
+    steps:
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git cmake ninja-build pkg-config g++ \
+            libwlroots-0.18-dev wayland-protocols libwayland-dev libxkbcommon-dev libpixman-1-dev \
+            libdrm-dev libgbm-dev libvulkan-dev libxcb1-dev libxcb-randr0-dev libxau-dev libglib2.0-dev
+
+      - uses: actions/checkout@v7
+        with:
+          path: brocompositor
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brodisplays
+          path: brodisplays
+
+      - uses: actions/checkout@v7
+        if: runner.os == 'Windows'
+        with:
+          repository: KhronosGroup/Vulkan-Headers
+          path: vulkan-headers
+
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S brocompositor -B build \
+              -DBROCOMPOSITOR_VULKAN_INCLUDE_DIR="$GITHUB_WORKSPACE/vulkan-headers/include"
+          else
+            cmake -S brocompositor -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+            grep -q 'BROCOMPOSITOR_WITH_WAYLAND:BOOL=ON' build/CMakeCache.txt
+          fi
+
+      # Code this repo does not own, built ahead of `init` so it is never
+      # extracted: for a compiled language CodeQL analyses what it watches the
+      # compiler compile, so anything already built is left out (paths-ignore
+      # does not filter compiled sources; the build order is the mechanism).
+      #
+      #   brodisplays    analysed by brodisplays' own CodeQL workflow; here it
+      #                  would double-report every finding against the wrong repo.
+      #   *_protocols    wayland-scanner output: interface tables generated from
+      #                  the protocol XML, not code anyone here writes.
+      - name: Pre-build sibling and generated code (outside the traced build)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --build build --config Debug --parallel 4 --target brodisplays
+          else
+            cmake --build build --parallel 4 \
+              --target brodisplays brocompositor_wl_server_protocols brocompositor_wl_protocols
+          fi
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          source-root: brocompositor
+          queries: security-extended
+
+      - name: Build brocompositor (traced)
+        run: cmake --build build --config Debug --parallel 4
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:c-cpp/os:${{ matrix.name }}

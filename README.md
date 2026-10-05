@@ -468,7 +468,7 @@ it only for `test_wl_brodisplays` (add `libxcb-randr0-dev libxau-dev` for it).
 The clients the Linux tests drive are listed under [Tests](#tests); CI
 installs them with `xwayland xvfb xterm x11-apps xclip xsel weston foot
 wl-clipboard wlr-randr gtk-3-examples qt6-base-examples swaylock swayidle grim
-wtype wlrctl wlsunset seatd mesa-vulkan-drivers` (`.github/ci/linux-full.sh`).
+wtype wlrctl wlsunset mesa-vulkan-drivers` (`.github/ci/linux-full.sh`).
 
 macOS (Apple clang, Command Line Tools are enough; macOS 12.3+ for capture):
 

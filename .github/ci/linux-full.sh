@@ -4,13 +4,14 @@
 # command with the workspace mounted at /w:
 #
 #   /w/brocompositor           this repo
-#   /w/brodisplays             the sibling, unless SOURCE=submodule
+#   /w/brodisplays             the sibling
 #
 # Environment: CC / CXX (gcc|clang), CONFIG (Release|Debug), COVERAGE (ON|OFF),
 # BROCOMPOSITOR_DRM_DEVICE (a vkms card the host loaded, or empty).
 #
 # Builds as root, then runs ctest as an unprivileged user in the video group:
 # the servers and clients the tests start are the ones a desktop user runs.
+# Only test_wl_drm runs as root (see below).
 set -euo pipefail
 
 : "${CC:=gcc}" "${CXX:=g++}" "${CONFIG:=Release}" "${COVERAGE:=OFF}"
@@ -32,7 +33,7 @@ build_packages=(
 test_packages=(
     xwayland xvfb xterm x11-apps xclip xsel
     weston foot wl-clipboard wlr-randr gtk-3-examples qt6-base-examples qt6-wayland
-    swaylock swayidle grim wtype wlrctl wlsunset seatd
+    swaylock swayidle grim wtype wlrctl wlsunset
     dbus dbus-user-session mesa-vulkan-drivers libgl1-mesa-dri libegl-mesa0 fonts-dejavu-core
     xkb-data
 )
@@ -50,29 +51,26 @@ cmake --build build --parallel "$(nproc)"
 id ci >/dev/null 2>&1 || useradd -m -G video ci
 chown -R ci /w
 
-# test_wl_drm takes DRM master on the vkms card through seatd.
-seatd_pid=""
-if [ -n "${BROCOMPOSITOR_DRM_DEVICE:-}" ] && [ -e "$BROCOMPOSITOR_DRM_DEVICE" ]; then
-    seatd -g video >/tmp/seatd.log 2>&1 &
-    seatd_pid=$!
-    for _ in $(seq 50); do [ -S /run/seatd.sock ] && break; sleep 0.1; done
-    export LIBSEAT_BACKEND=seatd
-else
-    unset BROCOMPOSITOR_DRM_DEVICE
-fi
-
 set +e
-runuser -u ci -- env \
-    ${BROCOMPOSITOR_DRM_DEVICE:+BROCOMPOSITOR_DRM_DEVICE="$BROCOMPOSITOR_DRM_DEVICE"} \
-    ${LIBSEAT_BACKEND:+LIBSEAT_BACKEND="$LIBSEAT_BACKEND"} \
-    /w/brocompositor/.github/ci/ctest.sh --test-dir build
+runuser -u ci -- /w/brocompositor/.github/ci/ctest.sh --test-dir build -E test_wl_drm
 rc=$?
-set -e
-[ -n "$seatd_pid" ] && kill "$seatd_pid" 2>/dev/null
 
 # Which Vulkan devices the dmabuf import test exercised (lavapipe here).
 echo
 sed -n '/Testing: test_wl_vulkan/,/<end of output>/p' build/Testing/Temporary/LastTest.log | grep -E '^ *--|texel|output images' || true
+
+# test_wl_drm takes DRM master on the vkms card the host loaded. There is no
+# seat in a container (no logind, no VT for seatd to bind), so it runs as root
+# with libseat's noop backend, which opens the card directly.
+echo
+if [ -n "${BROCOMPOSITOR_DRM_DEVICE:-}" ] && [ -e "$BROCOMPOSITOR_DRM_DEVICE" ]; then
+    LIBSEAT_BACKEND=noop /w/brocompositor/.github/ci/ctest.sh --test-dir build -R test_wl_drm
+else
+    env -u BROCOMPOSITOR_DRM_DEVICE /w/brocompositor/.github/ci/ctest.sh --test-dir build -R test_wl_drm
+fi
+drm_rc=$?
+[ "$drm_rc" -ne 0 ] && rc=$drm_rc
+set -e
 
 # Scoped to brocompositor's own src/ and include/: brodisplays is measured by
 # its own CI, the tests are not the subject, and the wayland-scanner output is

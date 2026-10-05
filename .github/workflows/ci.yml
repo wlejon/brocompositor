@@ -40,7 +40,9 @@ concurrency:
 # under wlroots' headless backend, against the third-party clients they drive
 # (weston demos, foot, GTK 3, Qt 6, XWayland, wl-clipboard, grim, ...). It runs
 # as `docker run` from an Ubuntu host rather than a `container:` job so the
-# host can load vkms first: test_wl_drm takes DRM master on that virtual card.
+# host can load kernel modules first (.github/ci/host-devices.sh): vkms, a
+# virtual KMS card test_wl_drm takes DRM master on, and udmabuf, which lavapipe
+# allocates dmabufs with for test_wl_vulkan.
 #
 # Every test that cannot run on a runner (no Accessibility or Screen Recording
 # grant on macOS, no Vulkan device on Windows, no vkms) exits 77 and ctest
@@ -137,16 +139,15 @@ jobs:
           repository: wlejon/brodisplays
           path: brodisplays
 
-      - name: Load vkms
-        id: vkms
-        run: brocompositor/.github/ci/load-vkms.sh
+      - name: Load vkms and udmabuf
+        id: dev
+        run: brocompositor/.github/ci/host-devices.sh
 
       - name: Build and test (debian:trixie)
         run: |
-          docker run --rm --shm-size=1g -v "$GITHUB_WORKSPACE:/w" \
-            ${{ steps.vkms.outputs.device && '--device /dev/dri' || '' }} \
+          docker run --rm --shm-size=1g -v "$GITHUB_WORKSPACE:/w" ${{ steps.dev.outputs.docker_args }} \
             -e CC=${{ matrix.cc }} -e CXX=${{ matrix.cxx }} -e CONFIG=Release -e COVERAGE=OFF \
-            -e BROCOMPOSITOR_DRM_DEVICE=${{ steps.vkms.outputs.device }} \
+            -e BROCOMPOSITOR_DRM_DEVICE=${{ steps.dev.outputs.drm_device }} \
             debian:trixie bash /w/brocompositor/.github/ci/linux-full.sh
 
   # ── Submodule fallback ────────────────────────────────────────────────────
@@ -197,16 +198,15 @@ jobs:
           repository: wlejon/brodisplays
           path: brodisplays
 
-      - name: Load vkms
-        id: vkms
-        run: brocompositor/.github/ci/load-vkms.sh
+      - name: Load vkms and udmabuf
+        id: dev
+        run: brocompositor/.github/ci/host-devices.sh
 
       - name: Build, test and report (debian:trixie)
         run: |
-          docker run --rm --shm-size=1g -v "$GITHUB_WORKSPACE:/w" \
-            ${{ steps.vkms.outputs.device && '--device /dev/dri' || '' }} \
+          docker run --rm --shm-size=1g -v "$GITHUB_WORKSPACE:/w" ${{ steps.dev.outputs.docker_args }} \
             -e CC=gcc -e CXX=g++ -e CONFIG=Debug -e COVERAGE=ON \
-            -e BROCOMPOSITOR_DRM_DEVICE=${{ steps.vkms.outputs.device }} \
+            -e BROCOMPOSITOR_DRM_DEVICE=${{ steps.dev.outputs.drm_device }} \
             debian:trixie bash /w/brocompositor/.github/ci/linux-full.sh
 
       - name: Job summary

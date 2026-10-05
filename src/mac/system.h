@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -21,14 +22,19 @@ namespace brocompositor::mac::sys {
 struct Screen {
     uint32_t display_id = 0;  // CGDirectDisplayID
     std::string name;         // localized display name
-    Rect frame;               // CGDisplayBounds
+    Rect frame;               // bounds in Quartz global points (CGDisplayBounds)
     Rect visible;             // minus the menu bar and the Dock (NSScreen.visibleFrame's insets)
     double scale = 1.0;       // pixels per point of the current display mode
     bool primary = false;     // holds the menu bar origin (Quartz 0,0)
 };
-// The active displays. Empty while every display is asleep (the window
-// server then reports no geometry worth trusting).
-std::vector<Screen> screens();
+// What NSScreen knows that the display topology (brodisplays, see
+// mac/displays.h) does not: the localized name and the visible frame's
+// insets (menu bar, Dock) in points, per CGDirectDisplayID.
+struct ScreenInsets {
+    std::string name;
+    double left = 0, top = 0, right = 0, bottom = 0;
+};
+std::map<uint32_t, ScreenInsets> screen_insets();
 
 struct App {
     uint32_t pid = 0;

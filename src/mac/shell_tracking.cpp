@@ -175,7 +175,7 @@ std::vector<MonitorSnapshot> ShellBackend::Impl::build_monitors(const std::vecto
 }
 
 void ShellBackend::Impl::refresh() {
-    std::vector<sys::Screen> now_screens = sys::screens();
+    std::vector<sys::Screen> now_screens = displays.screens();
     // Every display asleep: the window server's geometry is not meaningful
     // (it reports a scaled placeholder space). Wait for a display to wake.
     if (now_screens.empty()) {

@@ -12,30 +12,30 @@ namespace brocompositor::mac {
 
 namespace {
 
-std::vector<Rect> current_displays() {
+std::vector<Rect> frames_of(const std::vector<sys::Screen>& screens) {
     std::vector<Rect> out;
-    for (const auto& s : sys::screens()) out.push_back(s.frame);
+    for (const auto& s : screens) out.push_back(s.frame);
     return out;
 }
 
-Rect main_visible_frame() {
-    for (const auto& s : sys::screens())
+Rect main_visible_frame(const std::vector<sys::Screen>& screens) {
+    for (const auto& s : screens)
         if (s.primary) return s.visible.empty() ? s.frame : s.visible;
     return Rect{0, 0, 1280, 800};
 }
 
 // `frame` if a usable part of it is on a display, else the same size inside
 // the main display's visible frame.
-Rect onto_a_display(const Rect& frame, const std::vector<Rect>& displays) {
-    if (visible_area(frame, displays) > kParkedVisibleArea) return frame;
-    Rect work = main_visible_frame();
+Rect onto_a_display(const Rect& frame, const std::vector<sys::Screen>& screens) {
+    if (visible_area(frame, frames_of(screens)) > kParkedVisibleArea) return frame;
+    Rect work = main_visible_frame(screens);
     return Rect{work.x + 64, work.y + 64, std::min(frame.width, work.width - 128),
                 std::min(frame.height, work.height - 128)};
 }
 
 // Undoes one journaled hide if the window is still the one we hid and still
 // hidden. True when it was put back.
-bool restore_entry(AppWorker::Context& c, const shell::ParkedEntry& e) {
+bool restore_entry(ShellBackend::Impl& d, AppWorker::Context& c, const shell::ParkedEntry& e) {
     if (sys::process_start_time(e.pid) != e.pid_start) return false;  // a different process now
     AXUIElementRef w = c.find(uint32_t(e.window));
     if (!w) return false;
@@ -43,12 +43,12 @@ bool restore_entry(AppWorker::Context& c, const shell::ParkedEntry& e) {
     auto info = ax::info(w, &err);
     c.worker->note(err);
     if (!info) return false;
-    std::vector<Rect> displays = current_displays();
+    std::vector<sys::Screen> screens = d.displays.screens();
     switch (Hidden(e.method)) {
         case Hidden::Park:
             // Only if nothing moved it back onto a display meanwhile.
-            if (visible_area(info->frame, displays) > kParkedVisibleArea) return false;
-            return set_frame(w, onto_a_display(e.restore, displays)) == kAXErrorSuccess;
+            if (visible_area(info->frame, frames_of(screens)) > kParkedVisibleArea) return false;
+            return set_frame(w, onto_a_display(e.restore, screens)) == kAXErrorSuccess;
         case Hidden::Minimize:
             if (!info->minimized) return false;
             return ax::set_bool(w, kAXMinimizedAttribute, false) == kAXErrorSuccess;
@@ -103,7 +103,7 @@ RecoveryReport ShellBackend::Impl::recover_stale() {
                 keep = true;
                 continue;
             }
-            auto done = run_on<bool>(e.pid, false, [e](Impl&, AppWorker::Context& c) { return restore_entry(c, e); });
+            auto done = run_on<bool>(e.pid, false, [e](Impl& d, AppWorker::Context& c) { return restore_entry(d, c, e); });
             if (done.wait_for(std::chrono::seconds(10)) == std::future_status::ready && done.get())
                 ++report.windows_restored;
             else
@@ -124,7 +124,7 @@ RecoveryReport ShellBackend::Impl::recover_stale() {
 
 size_t ShellBackend::Impl::rescue_offscreen() {
     if (!permissions.accessibility) return 0;
-    std::vector<Rect> displays = current_displays();
+    std::vector<Rect> displays = frames_of(this->displays.screens());
     std::vector<std::pair<uint32_t, uint32_t>> lost;  // pid, cgid
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -135,13 +135,12 @@ size_t ShellBackend::Impl::rescue_offscreen() {
     }
     std::vector<Completion<bool>> results;
     for (auto [pid, cgid] : lost)
-        results.push_back(run_on<bool>(pid, false, [cgid](Impl&, AppWorker::Context& c) {
+        results.push_back(run_on<bool>(pid, false, [cgid](Impl& d, AppWorker::Context& c) {
             AXUIElementRef w = c.find(cgid);
             if (!w) return false;
             auto f = ax::frame(w, nullptr);
             if (!f) return false;
-            std::vector<Rect> now = current_displays();
-            Rect target = onto_a_display(*f, now);
+            Rect target = onto_a_display(*f, d.displays.screens());
             return target != *f && set_frame(w, target) == kAXErrorSuccess;
         }));
     size_t moved = 0;

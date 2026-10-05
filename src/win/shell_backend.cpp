@@ -29,17 +29,35 @@ void shell_thread(ShellBackend::Impl* d, std::promise<std::string>* ready) {
     SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     register_classes();
     // A hidden top-level (not message-only) window: only top-level windows
-    // receive WM_DISPLAYCHANGE / WM_SETTINGCHANGE broadcasts.
-    d->listener = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"brocompositor.listener", L"",
-                                  WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, module_instance(), nullptr);
-    if (!d->listener) {
+    // receive WM_SETTINGCHANGE broadcasts (SPI_SETWORKAREA). Display
+    // topology changes come from brodisplays, posted here as kMsgDisplays.
+    HWND listener = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"brocompositor.listener", L"",
+                                    WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, module_instance(), nullptr);
+    if (!listener) {
         ready->set_value("CreateWindowEx(listener) failed: " + std::to_string(GetLastError()));
         return;
     }
-    SetWindowLongPtrW(d->listener, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(d));
+    SetWindowLongPtrW(listener, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(d));
+    {
+        std::lock_guard<std::mutex> lock(d->mutex);
+        d->listener = listener;
+    }
+    auto fail = [&](std::string why) {
+        d->monitors.stop();
+        {
+            std::lock_guard<std::mutex> lock(d->mutex);
+            d->listener = nullptr;
+        }
+        DestroyWindow(listener);
+        ready->set_value(std::move(why));
+    };
+    std::string err;
+    if (!d->monitors.start([d] { d->request_displays(); }, &err)) {
+        fail(err);
+        return;
+    }
     if (!d->install_hooks()) {
-        DestroyWindow(d->listener);
-        ready->set_value("SetWinEventHook failed");
+        fail("SetWinEventHook failed");
         return;
     }
     d->report_initial_state();
@@ -57,6 +75,7 @@ void shell_thread(ShellBackend::Impl* d, std::promise<std::string>* ready) {
         std::lock_guard<std::mutex> lock(d->mutex);
         d->listener = nullptr;
     }
+    d->monitors.stop();
     // Jobs posted after the loop ended are dropped (their owners hold
     // promises that then report failure through their own fallbacks).
     while (PeekMessageW(&msg, l, kMsgCall, kMsgCall, PM_REMOVE))
@@ -90,10 +109,10 @@ LRESULT CALLBACK listener_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             case kMsgDirty:
                 d->mark_dirty(reinterpret_cast<HWND>(lp));
                 return 0;
-            case WM_DISPLAYCHANGE:
-            case WM_DPICHANGED:
+            case kMsgDisplays:
+                d->monitors.take_changes();
                 d->report_monitors_if_changed();
-                break;
+                return 0;
             case WM_SETTINGCHANGE:
                 if (wp == SPI_SETWORKAREA) d->report_monitors_if_changed();
                 break;

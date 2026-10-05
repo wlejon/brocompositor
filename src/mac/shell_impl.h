@@ -12,6 +12,7 @@
 
 #include "brocompositor/mac/shell_backend.h"
 #include "mac/app_worker.h"
+#include "mac/displays.h"
 #include "mac/system.h"
 #include "shell/journal.h"
 
@@ -70,6 +71,7 @@ struct ShellBackend::Impl : std::enable_shared_from_this<ShellBackend::Impl> {
     std::unique_ptr<shell::Journal> journal;
     std::shared_future<RecoveryReport> recovery;
     std::unique_ptr<sys::WorkspaceWatch> watch;
+    DisplayTopology displays;  // display set and its changes (brodisplays), any thread
     uint32_t self_pid = 0;
 
     // ---- tracking thread ----

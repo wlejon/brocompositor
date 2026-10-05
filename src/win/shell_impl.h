@@ -32,6 +32,7 @@ inline constexpr UINT kMsgCall = WM_APP + 1;      // lParam: std::function<void(
 inline constexpr UINT kMsgFlush = WM_APP + 2;     // coalesced change reporting
 inline constexpr UINT kMsgAppBar = WM_APP + 3;    // appbar notifications
 inline constexpr UINT kMsgDirty = WM_APP + 4;     // lParam: HWND to re-snapshot
+inline constexpr UINT kMsgDisplays = WM_APP + 5;  // brodisplays queued a topology change
 
 enum class Hidden : uint32_t { None = 0, Park, Minimize, Hide };
 
@@ -115,6 +116,11 @@ struct ShellBackend::Impl : std::enable_shared_from_this<ShellBackend::Impl> {
     void request_report(HWND hwnd) {
         std::lock_guard<std::mutex> lock(mutex);  // the listener is gone once the shell thread ended
         if (listener) PostMessageW(listener, kMsgDirty, 0, reinterpret_cast<LPARAM>(hwnd));
+    }
+    // brodisplays' watcher thread: a topology change is queued.
+    void request_displays() {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (listener) PostMessageW(listener, kMsgDisplays, 0, 0);
     }
     HWND hwnd_of(WindowId id) const;
     bool do_place(HWND h, const Rect& frame);

@@ -65,6 +65,12 @@ if(TARGET brocompositor_wayland)
         bc_test(test_wl_${t} SOURCES linux/test_wl_${t}.cpp LIBS bc_wl_harness)
     endforeach()
 
+    if(TARGET brodisplays)
+        # brodisplays as a client of this server: topology, mode changes,
+        # test-then-revert, night light as gamma.
+        bc_test(test_wl_brodisplays SOURCES linux/test_wl_brodisplays.cpp LIBS bc_wl_harness brodisplays::brodisplays)
+    endif()
+
     if(TARGET brocompositor_vulkan)
         # dmabuf <-> Vulkan on every capable device (GPU, lavapipe).
         bc_test(test_wl_vulkan SOURCES linux/test_wl_vulkan.cpp linux/vk_host.cpp

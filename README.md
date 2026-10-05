@@ -18,6 +18,30 @@ All roles share one portable core and one surface contract; the two shell
 backends also share their asynchronous operation model and crash-recovery
 journal (`shell.h`, `src/shell/`). Nothing else is pretended to be common.
 
+Displays follow the same split, through the sibling library
+[brodisplays](../brodisplays) (resolved as `../brodisplays`, overridable
+with `-DBRODISPLAYS_DIR=<path>`):
+
+* **Windows, macOS** — the OS owns the displays and brocompositor observes
+  them. Which displays exist, their bounds, DPI / scale, which is primary,
+  and when any of that changes come from brodisplays (its watcher window
+  sees `WM_DISPLAYCHANGE` on Windows; the CoreGraphics reconfiguration
+  callback plus a topology poll on macOS). The shells add only what is
+  theirs: the work area (Windows `rcWork`, which appbars and the taskbar
+  shape; macOS NSScreen's menu-bar / Dock insets), the platform handle
+  (HMONITOR), edge reservations, and stable `MonitorId`s. Sleeping and
+  mirroring displays are not monitors.
+* **Linux** — brocompositor *is* the display server: it owns its outputs
+  (`configure_output()`, wlr-output-management) and publishes them
+  (`wl_output`, `zwlr_output_management_v1`, `zwlr_gamma_control_v1`). It
+  does not take its topology from brodisplays, which would only be asking
+  itself. brodisplays is one of its clients, like wlr-randr or wlsunset:
+  `test_wl_brodisplays` runs it against the server and checks that the
+  outputs it lists are the server's, that a mode change and a test-then-revert
+  made through it reach the outputs, and that its night light arrives as the
+  server's gamma ramps (`gamma()` / `GammaChanged`) and is dropped when it
+  lets go or disconnects.
+
 ```
 include/brocompositor/
   geometry.h        Rect/Point/Size/Margins/Edge/Direction
@@ -137,8 +161,10 @@ within what macOS permits without SIP changes or private Spaces APIs:
   journaled across Space switches. Fullscreen windows live in their own
   Space and are not hidden (refused).
 * **Displays**: the display set, bounds and scale (dpi = 96 x pixels per
-  point of the current mode) come from CoreGraphics on every pass; the
-  menu-bar / Dock insets of the work area from NSScreen.visibleFrame.
+  point of the current mode) come from brodisplays (CoreGraphics, kept
+  current by its reconfiguration callback and topology poll, which wakes
+  the tracking thread); the menu-bar / Dock insets of the work area from
+  NSScreen.visibleFrame.
   Coordinates are Quartz global points (see geometry.h). Edge reservations
   are virtual (the reported work area shrinks; other applications see no
   change); there is no appbar protocol on macOS.
@@ -355,7 +381,8 @@ layout (`LayoutMode::Floating` is the default).
   queue's optional wake hook (and `WindowCapture::set_frame_callback`, which
   fires on a WGC thread-pool thread).
 * Windows: one shell thread per `ShellBackend` owns the WinEvent hooks, the
-  listener window (display / work-area broadcasts) and the appbar windows.
+  listener window (work-area broadcasts, and brodisplays' topology changes
+  posted to it from brodisplays' watcher thread) and the appbar windows.
   Window operations run on per-process worker threads (per-monitor-v2 DPI);
   workers start on demand and exit when idle.
 * macOS: one tracking thread per `ShellBackend` reads the window server's
@@ -418,7 +445,9 @@ ctest --test-dir build-release
 
 `BROCOMPOSITOR_WITH_WAYLAND` (default ON when wlroots-0.18 is found) builds
 the server role; protocol headers are generated with wayland-scanner at
-build time.
+build time. The Windows and macOS builds need `../brodisplays` (or
+`-DBRODISPLAYS_DIR`); the Linux build uses it only for `test_wl_brodisplays`
+(add `libxcb-randr0-dev libxau-dev` for it).
 
 macOS (Apple clang, Command Line Tools are enough; macOS 12.3+ for capture):
 
@@ -494,6 +523,7 @@ example and Xvfb when installed (missing programs are skipped, not failed).
 | test_wl_capture | grim (full + region) pixels, ext-image-copy-capture output frames paced by damage, toplevel source via the host, host_capture_copies |
 | test_wl_taskbar | ext-foreign-toplevel-list, wlrctl toplevel list/find/focus/minimize/close, xdg-activation |
 | test_wl_session | swayidle idle/resume, idle inhibitor, wlsunset gamma ramps + restore, oversize Wayland placement |
+| test_wl_brodisplays | brodisplays as a client: outputs (names, modes, layout, primary) as the server has them, mode change and test-then-revert reaching the outputs, night light as gamma ramps, released on disable and on disconnect (built when `../brodisplays` and its xcb / xcb-randr / xau dependencies are present) |
 
 The XWayland tests set `XWAYLAND_NO_GLAMOR=1`: glamor cannot render into
 LINEAR dmabufs on NVIDIA, and software rendering is enough for the checks.

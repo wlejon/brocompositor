@@ -13,12 +13,6 @@ namespace brocompositor::mac::sys {
 
 namespace {
 
-Rect to_rect(CGRect r) {
-    int32_t x = int32_t(std::lround(r.origin.x)), y = int32_t(std::lround(r.origin.y));
-    return Rect{x, y, int32_t(std::lround(r.origin.x + r.size.width)) - x,
-                int32_t(std::lround(r.origin.y + r.size.height)) - y};
-}
-
 std::string str(NSString* s) {
     const char* p = s ? s.UTF8String : nullptr;
     return p ? std::string(p) : std::string();
@@ -26,29 +20,19 @@ std::string str(NSString* s) {
 
 }  // namespace
 
-// The display set, bounds and scale come from CoreGraphics, which asks the
-// window server on every call from any thread. NSScreen does not: in a
-// process that does not run NSApplication's event loop on its main thread
-// it keeps the configuration it first read (measured on macOS 26: after a
-// display mode change NSScreen still reported the old size, even after
-// spinning the main run loop), so it only contributes what CoreGraphics
-// lacks, the names and the menu-bar / Dock insets of the visible frame,
-// applied to the current bounds.
-std::vector<Screen> screens() {
-    std::vector<Screen> out;
-    CGDirectDisplayID ids[32];
-    uint32_t count = 0;
-    if (CGGetActiveDisplayList(32, ids, &count) != kCGErrorSuccess) return out;
-    struct Insets {
-        std::string name;
-        double left = 0, top = 0, right = 0, bottom = 0;
-    };
-    std::map<CGDirectDisplayID, Insets> insets;
+// NSScreen, in a process that does not run NSApplication's event loop on its
+// main thread, keeps the configuration it first read (measured on macOS 26:
+// after a display mode change NSScreen still reported the old size, even
+// after spinning the main run loop). So it contributes only what the
+// topology lacks, the names and the menu-bar / Dock insets of the visible
+// frame, which the shell applies to the current bounds.
+std::map<uint32_t, ScreenInsets> screen_insets() {
+    std::map<uint32_t, ScreenInsets> insets;
     @autoreleasepool {
         for (NSScreen* s in [NSScreen screens]) {
             NSNumber* number = s.deviceDescription[@"NSScreenNumber"];
             if (!number) continue;
-            Insets in;
+            ScreenInsets in;
             if (@available(macOS 10.15, *)) in.name = str(s.localizedName);
             NSRect f = s.frame, v = s.visibleFrame;
             in.left = std::max(0.0, v.origin.x - f.origin.x);
@@ -58,37 +42,7 @@ std::vector<Screen> screens() {
             insets[number.unsignedIntValue] = in;
         }
     }
-    for (uint32_t i = 0; i < count; ++i) {
-        CGDirectDisplayID id = ids[i];
-        // A mirror shows another display's space: not a monitor of its own.
-        if (CGDisplayIsAsleep(id) || CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay) continue;
-        Screen sc;
-        sc.display_id = id;
-        CGRect b = CGDisplayBounds(id);
-        sc.frame = to_rect(b);
-        sc.visible = sc.frame;
-        auto in = insets.find(id);
-        if (in != insets.end()) {
-            sc.name = in->second.name;
-            // Insets larger than half the display are from a stale, larger
-            // configuration: ignore them.
-            if (in->second.left + in->second.right < b.size.width / 2 &&
-                in->second.top + in->second.bottom < b.size.height / 2)
-                sc.visible = to_rect(CGRectMake(b.origin.x + in->second.left, b.origin.y + in->second.top,
-                                                b.size.width - in->second.left - in->second.right,
-                                                b.size.height - in->second.top - in->second.bottom));
-        }
-        if (sc.name.empty()) sc.name = "display-" + std::to_string(id);
-        sc.scale = 1.0;
-        if (CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id)) {
-            size_t points = CGDisplayModeGetWidth(mode), pixels = CGDisplayModeGetPixelWidth(mode);
-            if (points > 0 && pixels > 0) sc.scale = double(pixels) / double(points);
-            CGDisplayModeRelease(mode);
-        }
-        sc.primary = CGDisplayIsMain(id);
-        out.push_back(sc);
-    }
-    return out;
+    return insets;
 }
 
 std::optional<App> app(uint32_t pid) {

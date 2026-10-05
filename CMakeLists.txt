@@ -65,6 +65,33 @@ target_link_libraries(brocompositor_shell_common PUBLIC brocompositor_core Threa
 set_target_properties(brocompositor_shell_common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 brocompositor_warnings(brocompositor_shell_common)
 
+# ---------------------------------------------------------------- brodisplays
+# Display topology. On Windows and macOS the OS owns the displays and the
+# shell backends observe them through brodisplays (which ones exist, their
+# geometry, DPI, primary, and change events). On Linux brocompositor is the
+# display server: it owns its outputs and publishes them (wl_output,
+# wlr-output-management, wlr-gamma-control), and brodisplays is one of its
+# clients; there it is needed only by the integration test.
+# Resolved like bro's siblings: an existing `brodisplays` target wins,
+# otherwise ../brodisplays, overridable with -DBRODISPLAYS_DIR=<path>.
+set(_bc_need_brodisplays OFF)
+if(WIN32 OR APPLE)
+    set(_bc_need_brodisplays ON)
+endif()
+if(NOT TARGET brodisplays)
+    get_filename_component(_bc_brodisplays_default "${CMAKE_CURRENT_SOURCE_DIR}/../brodisplays" ABSOLUTE)
+    set(BRODISPLAYS_DIR "${_bc_brodisplays_default}" CACHE PATH "Path to the brodisplays repo")
+    if(_bc_need_brodisplays)
+        if(NOT EXISTS "${BRODISPLAYS_DIR}/CMakeLists.txt")
+            message(FATAL_ERROR "brocompositor needs brodisplays: clone it beside brocompositor (../brodisplays) "
+                                "or pass -DBRODISPLAYS_DIR=<path>")
+        endif()
+        message(STATUS "brocompositor: brodisplays from ${BRODISPLAYS_DIR}")
+        set(BRODISPLAYS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        add_subdirectory("${BRODISPLAYS_DIR}" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
+    endif()
+endif()
+
 # ---------------------------------------------------------------- Windows
 if(WIN32)
     add_library(brocompositor_win STATIC
@@ -82,7 +109,8 @@ if(WIN32)
     add_library(brocompositor::win ALIAS brocompositor_win)
     target_link_libraries(brocompositor_win
         PUBLIC brocompositor_core
-        PRIVATE brocompositor_shell_common user32 shell32 ole32 dwmapi shcore d3d11 dxgi windowsapp)
+        PRIVATE brocompositor_shell_common brodisplays::brodisplays
+                user32 shell32 ole32 dwmapi shcore d3d11 dxgi windowsapp)
     target_compile_definitions(brocompositor_win PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_include_directories(brocompositor_win PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     brocompositor_warnings(brocompositor_win)
@@ -103,6 +131,7 @@ if(APPLE)
     add_library(brocompositor_mac STATIC
         src/mac/system.cpp
         src/mac/appkit.mm
+        src/mac/displays.cpp
         src/mac/permissions.cpp
         src/mac/ax.cpp
         src/mac/app_worker.cpp
@@ -119,7 +148,7 @@ if(APPLE)
     target_include_directories(brocompositor_mac PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(brocompositor_mac
         PUBLIC brocompositor_core
-        PRIVATE brocompositor_shell_common
+        PRIVATE brocompositor_shell_common brodisplays::brodisplays
         "-framework CoreFoundation" "-framework CoreGraphics" "-framework ApplicationServices"
         "-framework AppKit" "-framework IOSurface" "-framework Metal" "-framework CoreMedia"
         "-framework CoreVideo" "-weak_framework ScreenCaptureKit")
@@ -307,6 +336,20 @@ if(BROCOMPOSITOR_WITH_VULKAN)
         target_compile_options(brocompositor_vulkan PRIVATE -Wno-missing-field-initializers)
     endif()
     target_link_libraries(brocompositor INTERFACE brocompositor_vulkan)
+endif()
+
+# Linux: brodisplays only for the test that runs it as a client of this
+# server (skipped when the repo or its X11 dependencies are missing).
+if(BROCOMPOSITOR_BUILD_TESTS AND BROCOMPOSITOR_WITH_WAYLAND AND NOT TARGET brodisplays
+   AND EXISTS "${BRODISPLAYS_DIR}/CMakeLists.txt")
+    pkg_check_modules(BC_BRODISPLAYS_DEPS QUIET xcb xcb-randr xau)
+    if(BC_BRODISPLAYS_DEPS_FOUND)
+        message(STATUS "brocompositor: brodisplays (tests) from ${BRODISPLAYS_DIR}")
+        set(BRODISPLAYS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        add_subdirectory("${BRODISPLAYS_DIR}" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
+    else()
+        message(STATUS "brocompositor: test_wl_brodisplays skipped (brodisplays needs xcb, xcb-randr, xau)")
+    endif()
 endif()
 
 if(BROCOMPOSITOR_BUILD_TESTS)

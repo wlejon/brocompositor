@@ -62,6 +62,7 @@ std::unique_ptr<ShellBackend> ShellBackend::create(const ShellConfig& config, st
     impl->journal = std::make_unique<shell::Journal>(dir, impl->self_pid, sys::process_start_time(impl->self_pid));
 
     Impl* d = impl.get();
+    if (!impl->displays.start([d] { d->wake(); }, error)) return nullptr;
     impl->watch = sys::WorkspaceWatch::start([d] { d->wake(); });
     std::promise<void> ready;
     impl->thread = std::thread([d, &ready] { d->run(&ready); });
@@ -90,6 +91,7 @@ ShellBackend::~ShellBackend() {
     }
     impl_->wake_cv.notify_all();
     impl_->thread.join();
+    impl_->displays.stop();
     std::map<uint32_t, std::shared_ptr<AppWorker>> workers;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -233,7 +235,7 @@ std::optional<WindowSnapshot> ShellBackend::query(WindowId id) const {
 }
 
 std::vector<MonitorSnapshot> ShellBackend::monitors() const {
-    std::vector<sys::Screen> screens = sys::screens();
+    std::vector<sys::Screen> screens = impl_->displays.screens();
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (screens.empty()) return impl_->reported_monitors;
     // Read-only: reservation rectangles are updated by the tracking pass.

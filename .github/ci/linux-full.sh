@@ -76,10 +76,13 @@ set -e
 
 # Scoped to brocompositor's own src/ and include/: brodisplays is measured by
 # its own CI, the tests are not the subject, and the wayland-scanner output is
-# generated. pipefail is on, so a gcovr crash fails the job.
+# generated. pipefail is on, so a gcovr crash fails the job. The test objects
+# are not read at all: helper clients the tests kill mid-run can leave a torn
+# .gcda behind, which gcov refuses.
 if [ "$COVERAGE" = "ON" ]; then
     mkdir -p coverage-html
     gcovr --root . \
+        --exclude-directories 'build/tests' \
         --filter 'brocompositor/src/' --filter 'brocompositor/include/brocompositor/' \
         --exclude-unreachable-branches \
         --print-summary \

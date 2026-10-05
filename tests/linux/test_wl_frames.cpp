@@ -18,6 +18,16 @@ namespace {
 
 void sleep_ms(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
+// The fewest presents per second the test host must manage. It composites on
+// the CPU; an unoptimized build (Debug, coverage) on a shared runner can fall
+// below the 60 Hz output, and there the frames only have to keep coming. The
+// ceiling (no unthrottled presents) holds in every build.
+#if defined(__OPTIMIZE__)
+constexpr uint64_t kMinPresentsPerSecond = 45;
+#else
+constexpr uint64_t kMinPresentsPerSecond = 20;
+#endif
+
 // Frames the client counted over `ms`, and presents the host made.
 std::pair<size_t, uint64_t> measure(Host& host, Child& c, MonitorId mon, int ms) {
     size_t f0 = c.count("frame ");
@@ -41,7 +51,7 @@ void run(Host& host) {
     // ~60 callbacks per second, one per present that drew the surface.
     auto [frames, presents] = measure(host, *c, mon, 1000);
     std::printf("1 s: %zu frame callbacks, %llu presents\n", frames, static_cast<unsigned long long>(presents));
-    CHECK(presents >= 45 && presents <= 75);
+    CHECK(presents >= kMinPresentsPerSecond && presents <= 75);
     CHECK(frames + 3 >= presents && frames <= presents + 1);
     CHECK(c->count("presented ") + 5 >= c->count("frame "));
 
@@ -73,7 +83,7 @@ void run(Host& host) {
     sleep_ms(100);
     auto hidden = measure(host, *c, mon, 500);
     CHECK(hidden.first <= 1);
-    CHECK(hidden.second >= 20);  // the host keeps presenting the output
+    CHECK(hidden.second >= kMinPresentsPerSecond / 2 - 2);  // the host keeps presenting the output
     CHECK(host.server().execute(Command{SetWindowVisible{w, true}}));
     size_t before = c->count("frame ");
     CHECK(c->wait_count("frame ", before + 10, 5000));

@@ -272,6 +272,7 @@ bool Server::ensure_output_images(OutputRec& out, int w, int h) {
 }
 
 void Server::free_output_images(OutputRec& out) {
+    set_front_image(out, 0);
     for (OutputImageSlot* s : out.slots) wlr_buffer_drop(&s->buf.base);
     out.slots.clear();
     out.pending_image = 0;
@@ -294,6 +295,18 @@ OutputImageSlot* Server::slot(OutputRec& out, uint64_t image_id) {
     for (OutputImageSlot* s : out.slots)
         if (s->desc.id == image_id) return s;
     return nullptr;
+}
+
+void Server::set_front_image(OutputRec& out, uint64_t image_id) {
+    // A backend may release a committed buffer at once (headless does): the
+    // slot would go back to the host, which repaints it from the background
+    // up while a capture still copies it as the screen. Lock the new front
+    // before unlocking the old, so presenting the same image twice is safe.
+    OutputImageSlot* next = image_id ? slot(out, image_id) : nullptr;
+    if (next) wlr_buffer_lock(&next->buf.base);
+    if (OutputImageSlot* prev = out.front_image ? slot(out, out.front_image) : nullptr)
+        wlr_buffer_unlock(&prev->buf.base);
+    out.front_image = next ? image_id : 0;
 }
 
 void Server::set_image_state(MonitorId output, uint64_t image_id, SlotState state) {

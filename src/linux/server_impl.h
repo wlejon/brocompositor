@@ -109,7 +109,9 @@ struct OutputRec {
     bool use_shm = false;         // fell back to shm images
     uint64_t pending_image = 0;   // committed, waiting for present
     std::map<uint32_t, uint64_t> inflight;  // commit_seq -> image id
-    uint64_t front_image = 0;     // last successfully committed image
+    // Last successfully committed image. The server holds a lock on it, so it
+    // stays out of the host's free list while captures copy from it.
+    uint64_t front_image = 0;
     std::vector<PresentWaiter> present_waiters;
     GammaState gamma;
     Listener frame, present, destroy, request_state, commit;
@@ -452,6 +454,7 @@ struct Server {
     void free_output_images(OutputRec& out);
     void publish_output_images(OutputRec& out);
     OutputImageSlot* slot(OutputRec& out, uint64_t image_id);
+    void set_front_image(OutputRec& out, uint64_t image_id);  // 0 releases it
     void set_image_state(MonitorId output, uint64_t image_id, SlotState state);
 
     // ---- seat.cpp ----

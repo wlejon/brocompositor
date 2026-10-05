@@ -293,11 +293,12 @@ const ext_image_copy_capture_frame_v1_listener frame_listener = {
     [](void* d, ext_image_copy_capture_frame_v1* f) {
         auto& a = *static_cast<App*>(d);
         ext_image_copy_capture_frame_v1_destroy(f);
-        out("frame_ready %d", ++a.frames_done);
+        // The pixels first: a reader that sees frame_ready has them too.
         const auto* px = static_cast<const uint32_t*>(a.cap.map);
         for (auto [x, y] : a.pixels)
             if (px && x >= 0 && y >= 0 && x < a.cap.w && y < a.cap.h)
                 out("pixel %d %d %08X", x, y, px[size_t(y) * size_t(a.cap.w) + size_t(x)]);
+        out("frame_ready %d", ++a.frames_done);
         if (a.frames_done < a.frames_wanted) capture_frame(a);
     },
     [](void* d, ext_image_copy_capture_frame_v1* f, uint32_t reason) {

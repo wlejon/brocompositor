@@ -361,7 +361,7 @@ void Server::present(MonitorId id, PresentRequest req) {
     wlr_output_state_finish(&st);
     if (!ok) return fail();
     out->inflight[out->output->commit_seq] = req.image_id;
-    out->front_image = req.image_id;
+    set_front_image(*out, req.image_id);
     int64_t t = now_ns();
     for (wlr_surface* ws : drawn) send_frame_done(ws, t);
     if (lock_clean) lock_output_presented(id);

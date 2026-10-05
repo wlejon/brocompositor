@@ -95,11 +95,28 @@ struct CaptureConfig {
 
 // A ScreenCaptureKit stream of one window (CGWindowID, as in
 // WindowSnapshot::native) into a SurfaceRing. The output follows the
-// window's size in pixels (points x its display's scale).
+// window's size in pixels (points x its display's scale) and is sRGB
+// (BGRA8, sRGB-encoded) whatever the display's colour space.
+//
+// The whole window is captured wherever it is: a window parked at a display
+// corner by the shell backend (a 1 pt sliver on screen) keeps delivering
+// full frames with new content. A window that is not displayed at all
+// (minimized, ordered out, closed, on another Space) delivers no frames;
+// the capture stays open and resumes when the window is displayed again.
+//
+// closed() becomes true when the stream stops, when the window leaves the
+// window server (its process exited), or, with the Accessibility
+// permission, when its application no longer has the window (closed or
+// ordered out: the same as the shell backend's WindowRemoved). macOS keeps
+// a closed AppKit window in the window server, off screen, for as long as
+// its process lives, and ScreenCaptureKit treats it exactly like an ordered
+// out one, so without Accessibility closing a window is not detected.
 class WindowCapture final : public SurfaceSource {
 public:
     // Fails with a reason when Screen Recording is not granted or the window
-    // is not shareable. Never prompts.
+    // is not shareable. Never prompts. The first frames can be from the
+    // window's opening animation (a few percent smaller) when the window
+    // was just created.
     static std::unique_ptr<WindowCapture> start(std::shared_ptr<MetalDevice> device, uint64_t window,
                                                 const CaptureConfig& config, std::string* error);
     ~WindowCapture() override;

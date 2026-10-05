@@ -152,7 +152,10 @@ within what macOS permits without SIP changes or private Spaces APIs:
   a `mac::SurfaceRing` of IOSurface-backed textures, signalling a
   MTLSharedEvent timeline; the Vulkan importer imports both through MoltenVK
   (`VK_EXT_metal_objects`). A `SurfaceRing` can be fed IOSurfaces directly.
-  `closed()` also asks the window server whether the window still exists.
+  Frames are sRGB whatever the display's colour space. `closed()` is true
+  once the stream stops, the window leaves the window server, or (with
+  Accessibility) the window's AX element is gone; see below for why the
+  last one is needed.
 * **Permissions** are queried, never requested (`mac::query_permissions()`
   does not prompt or open System Settings). `responsible_path` names the
   binary tccd checks the grants against (see below).
@@ -186,8 +189,29 @@ backend relies on.
   while minimized). AX destroys and re-creates a window's element when it
   is deminiaturized (same CGWindowID), so notifications must be
   re-subscribed per element. AppKit ignores `close` (and moves) while the
-  Dock's (de)miniaturize animation runs. A closed window may linger in
-  CGWindowList for a moment, off screen.
+  Dock's (de)miniaturize animation runs. A closed window stays in
+  CGWindowList, off screen (next bullet).
+* **Closed windows stay in the window server.** After `-[NSWindow close]`
+  (also with `releasedWhenClosed` and every reference dropped) the window
+  stays in CGWindowList, off screen, with its id, bounds and title, and in
+  `SCShareableContent` (`onScreen` 0), for as long as its process lives
+  (measured for 15 s); nothing in either tells it from an ordered-out
+  window. Only AX does: the element turns invalid. When the process exits
+  the window leaves the list and its ScreenCaptureKit stream stops
+  (SCFrameStatusStopped, then `didStopWithError` -3815).
+* **ScreenCaptureKit and windows that are not displayed.** A
+  desktop-independent window stream captures the whole window wherever it
+  is: parked with a 1 x 91 pt sliver on screen it keeps delivering full
+  frames with new content (on Windows, DWM instead stops composing a fully
+  off-screen window and the last frame stays). Closed or ordered out, the stream delivers the
+  window's fade-out (frames darkening to black), then
+  SCFrameStatusIdle, then SCFrameStatusSuspended, and keeps running;
+  minimized, it goes straight to Suspended. Displayed again, it resumes with
+  Complete frames. By default frames are in the display's colour space (on
+  this Mac's panel sRGB 20B040 arrives as 54AD4F); `colorSpaceName =
+  kCGColorSpaceSRGB` returns the window's sRGB values exactly. The first
+  frames of a just-created window come from its opening animation (316 x
+  198 pt for a 320 x 200 pt window).
 * **The window server's list trails AX** by a few frames after a move.
 * **Titles without Screen Recording.** CGWindowList omits other processes'
   window names; AX titles work with Accessibility alone.
@@ -441,7 +465,7 @@ the binary to grant it to.
 | test_mac_ops | Accessibility | place, park/show (journaled), minimize hiding, close, teardown restore, hung application |
 | test_mac_focus | Accessibility, unlocked | focus, AlreadyFocused, Superseded, focus-none -> Finder, tracking |
 | test_mac_surface_vulkan | MoltenVK | IOSurface -> SurfaceRing -> Vulkan pixel check, timeline, leases, resize, adapter match |
-| test_mac_capture | Screen Recording, unlocked | ScreenCaptureKit window -> Vulkan pixel check; refusal without the permission |
+| test_mac_capture | Screen Recording, unlocked (+ Accessibility for park / close) | ScreenCaptureKit window -> Vulkan exact sRGB pixel check; whole frames with new content while parked; suspended but open across minimize; closed on window close (AX) and on application exit; refusal without the permission |
 
 The Linux tests run a `ServerBackend` with a test host (`tests/linux/wl_harness`:
 WindowManager + hit-test routing + CPU compositor) in a private

@@ -5,6 +5,7 @@
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 
 #include "brocompositor/mac/shell_backend.h"  // query_permissions
+#include "mac/ax.h"
 #include "mac/metal_impl.h"
 #include "mac/system.h"
 
@@ -16,15 +17,66 @@
 namespace bcm = brocompositor::mac;
 
 namespace brocompositor::mac {
+
+// ScreenCaptureKit cannot tell a closed window from one that is ordered out:
+// both fade out, then the stream reports SCFrameStatusSuspended and keeps
+// running, and the window server keeps the closed window (off screen, same
+// id) for as long as its process lives. Accessibility can: the window's AX
+// element turns invalid when it is closed or ordered out, and stays valid
+// while it is minimized or on another Space (the shell backend's
+// WindowRemoved rule). With the permission, a suspended stream asks it.
+// Every AX call runs on `queue` (an AX call blocks for up to kTimeout on a
+// busy application); `element` is touched only there.
+struct AxWatch {
+    static constexpr std::chrono::milliseconds kTimeout{250};
+    dispatch_queue_t queue = nil;
+    uint32_t window = 0;
+    ax::Element app;
+    ax::Element element;  // the window's element (re-created by AX on deminiaturize)
+    std::atomic<bool>* closed = nullptr;
+    std::atomic<bool> busy{false};  // a check is queued or running
+
+    // Finds the window's current element among the application's windows.
+    bool lookup(AXError* error = nullptr) {
+        AXError err = kAXErrorSuccess;
+        for (auto& w : ax::windows(app.get(), kTimeout, &err))
+            if (ax::window_id(w.get()) == window) {
+                element = std::move(w);
+                err = kAXErrorSuccess;
+                if (error) *error = err;
+                return true;
+            }
+        if (error) *error = err;
+        return false;
+    }
+    // The stream is suspended: was the window closed (or ordered out)?
+    void check() {
+        if (!element) {
+            lookup();  // never found yet: nothing to compare against
+            return;
+        }
+        AXError err = ax::probe(element.get());
+        if (!ax::gone(err)) return;  // valid (minimized, another Space), or the app is busy
+        if (lookup(&err)) return;    // a re-created element (deminiaturized)
+        if (err != kAXErrorSuccess && err != kAXErrorNoValue) return;  // the application did not answer
+        sys::trace("capture %u: AX element gone: closed or ordered out", window);
+        closed->store(true);
+    }
+};
+
 struct CaptureSink {
     std::mutex mutex;
     SurfaceRing* ring = nullptr;  // null once the capture is being torn down
     std::atomic<bool> closed{false};
+    std::atomic<bool> suspended{false};  // SCFrameStatusSuspended: the window is not displayed
+    AxWatch* ax = nullptr;               // with Accessibility
     uint32_t window = 0;
     double scale = 2.0;
     size_t out_w = 0, out_h = 0;
     std::chrono::steady_clock::time_point next_size_check{};
+    long last_status = -1;  // the last SCFrameStatus seen (capture queue only)
 };
+
 }  // namespace brocompositor::mac
 
 API_AVAILABLE(macos(12.3))
@@ -44,6 +96,20 @@ API_AVAILABLE(macos(12.3))
     if (!attachments || CFArrayGetCount(attachments) == 0) return;
     NSDictionary* info = (__bridge NSDictionary*)CFArrayGetValueAtIndex(attachments, 0);
     NSNumber* status = info[SCStreamFrameInfoStatus];
+    if (status && status.integerValue != sink->last_status) {
+        sink->last_status = status.integerValue;
+        bcm::sys::trace("capture %u: frame status %ld", sink->window, long(status.integerValue));
+        if (status.integerValue == SCFrameStatusStopped) sink->closed = true;
+        if (status.integerValue == SCFrameStatusSuspended) sink->suspended = true;
+        if (status.integerValue == SCFrameStatusComplete && sink->suspended.exchange(false) && sink->ax) {
+            // Displayed again: AX may have re-created the window's element
+            // (it does on deminiaturize). Pick up the current one.
+            bcm::AxWatch* ax = sink->ax;
+            dispatch_async(ax->queue, ^{
+              ax->lookup();
+            });
+        }
+    }
     if (!status || status.integerValue != SCFrameStatusComplete) return;
     CVPixelBufferRef pixels = CMSampleBufferGetImageBuffer(buffer);
     IOSurfaceRef surface = pixels ? CVPixelBufferGetIOSurface(pixels) : nullptr;
@@ -83,6 +149,8 @@ API_AVAILABLE(macos(12.3))
 }
 
 - (void)stream:(SCStream*)stream didStopWithError:(NSError*)error {
+    bcm::sys::trace("capture: stream stopped: %ld %s", long(error.code),
+                    error ? error.localizedDescription.UTF8String : "");
     if (bcm::CaptureSink* sink = self.sink) sink->closed = true;
 }
 
@@ -96,7 +164,14 @@ struct WindowCapture::Impl {
     SCStream* stream API_AVAILABLE(macos(12.3)) = nil;
     BCStreamOutput* output API_AVAILABLE(macos(12.3)) = nil;
     dispatch_queue_t queue = nil;
+    std::unique_ptr<AxWatch> ax;  // with Accessibility
     mutable std::atomic<int64_t> last_exists_check{0};  // steady ms
+
+    // After the capture queue drained (~WindowCapture): nothing submits to
+    // the AX queue any more; wait out a running check.
+    ~Impl() {
+        if (ax) dispatch_sync(ax->queue, ^{});
+    }
 };
 
 namespace {
@@ -175,10 +250,26 @@ std::unique_ptr<WindowCapture> WindowCapture::start(std::shared_ptr<MetalDevice>
         cfg.width = std::max<size_t>(impl->sink.out_w, 1);
         cfg.height = std::max<size_t>(impl->sink.out_h, 1);
         cfg.pixelFormat = 'BGRA';
+        // sRGB, whatever the display's colour space (by default the stream
+        // delivers the display's: on a P3 panel sRGB 20B040 arrives as
+        // 54AD4F).
+        cfg.colorSpaceName = kCGColorSpaceSRGB;
         cfg.showsCursor = config.capture_cursor;
         cfg.minimumFrameInterval = CMTimeMake(1, int32_t(std::max(1u, config.max_fps)));
         cfg.queueDepth = 3;
 
+        if (AXIsProcessTrusted() && target.owningApplication) {
+            impl->ax = std::make_unique<AxWatch>();
+            impl->ax->queue = dispatch_queue_create("brocompositor.capture.ax", DISPATCH_QUEUE_SERIAL);
+            impl->ax->window = uint32_t(window);
+            impl->ax->app = ax::application(uint32_t(target.owningApplication.processID), AxWatch::kTimeout);
+            impl->ax->closed = &impl->sink.closed;
+            impl->sink.ax = impl->ax.get();
+            AxWatch* watch = impl->ax.get();
+            dispatch_async(watch->queue, ^{
+              watch->lookup();
+            });
+        }
         impl->queue = dispatch_queue_create("brocompositor.capture", DISPATCH_QUEUE_SERIAL);
         impl->output = [[BCStreamOutput alloc] init];
         impl->output.sink = &impl->sink;
@@ -243,9 +334,22 @@ bool WindowCapture::closed() const {
     int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::steady_clock::now().time_since_epoch()).count();
     int64_t last = impl_->last_exists_check.load();
-    if (now - last >= 250 && impl_->last_exists_check.compare_exchange_strong(last, now) &&
-        !sys::describe_window(impl_->sink.window))
-        impl_->sink.closed = true;
+    if (now - last >= 250 && impl_->last_exists_check.compare_exchange_strong(last, now)) {
+        if (!sys::describe_window(impl_->sink.window)) {
+            sys::trace("capture %u: window gone from the window server", impl_->sink.window);
+            impl_->sink.closed = true;
+        }
+        // Not displayed: closed, ordered out, minimized or on another Space.
+        // Accessibility tells the first two from the others (off this
+        // thread: an AX call can block on a busy application).
+        AxWatch* ax = impl_->ax.get();
+        if (ax && impl_->sink.suspended.load() && !ax->busy.exchange(true)) {
+            dispatch_async(ax->queue, ^{
+              ax->check();
+              ax->busy = false;
+            });
+        }
+    }
     return impl_->sink.closed.load();
 }
 void WindowCapture::set_frame_callback(std::function<void()> callback) {

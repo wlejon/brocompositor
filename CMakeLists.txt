@@ -75,6 +75,89 @@ if(WIN32)
     target_link_libraries(brocompositor INTERFACE brocompositor_win)
 endif()
 
+# ---------------------------------------------------------------- Linux: Wayland server role
+# wlroots 0.18 as a protocol / backend / input / session toolkit (no
+# wlr_renderer, no wlr_scene). Protocol headers are generated here.
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(BC_WLR QUIET IMPORTED_TARGET
+            wlroots-0.18 wayland-server wayland-client xkbcommon pixman-1 libdrm gbm)
+        pkg_get_variable(BC_WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+    endif()
+    find_program(BC_WAYLAND_SCANNER wayland-scanner)
+    set(_bc_wl_default OFF)
+    if(BC_WLR_FOUND AND BC_WAYLAND_SCANNER AND BC_WAYLAND_PROTOCOLS_DIR)
+        set(_bc_wl_default ON)
+    endif()
+    option(BROCOMPOSITOR_WITH_WAYLAND "Build the Wayland server backend (wlroots 0.18)" ${_bc_wl_default})
+endif()
+
+if(BROCOMPOSITOR_WITH_WAYLAND)
+    if(NOT BC_WLR_FOUND OR NOT BC_WAYLAND_SCANNER OR NOT BC_WAYLAND_PROTOCOLS_DIR)
+        message(FATAL_ERROR "BROCOMPOSITOR_WITH_WAYLAND needs wlroots-0.18, wayland-protocols, wayland-scanner, "
+                            "xkbcommon, pixman-1, libdrm and gbm (pkg-config)")
+    endif()
+    enable_language(C)
+    find_package(Threads REQUIRED)
+    set(BC_PROTO_DIR ${CMAKE_CURRENT_BINARY_DIR}/protocols)
+    file(MAKE_DIRECTORY ${BC_PROTO_DIR})
+    set(BC_PROTO_SOURCES "")
+    # bc_wl_protocol(<xml> <base>): <base>-protocol.h (server), <base>-client-protocol.h,
+    # <base>-protocol.c (interfaces, for clients; wlroots carries its own).
+    function(bc_wl_protocol xml base)
+        add_custom_command(
+            OUTPUT ${BC_PROTO_DIR}/${base}-protocol.h ${BC_PROTO_DIR}/${base}-client-protocol.h
+                   ${BC_PROTO_DIR}/${base}-protocol.c
+            COMMAND ${BC_WAYLAND_SCANNER} server-header ${xml} ${BC_PROTO_DIR}/${base}-protocol.h
+            COMMAND ${BC_WAYLAND_SCANNER} client-header ${xml} ${BC_PROTO_DIR}/${base}-client-protocol.h
+            COMMAND ${BC_WAYLAND_SCANNER} private-code ${xml} ${BC_PROTO_DIR}/${base}-protocol.c
+            DEPENDS ${xml} VERBATIM)
+        set(BC_PROTO_SOURCES ${BC_PROTO_SOURCES} ${BC_PROTO_DIR}/${base}-protocol.h
+            ${BC_PROTO_DIR}/${base}-client-protocol.h ${BC_PROTO_DIR}/${base}-protocol.c PARENT_SCOPE)
+    endfunction()
+    set(_wp ${BC_WAYLAND_PROTOCOLS_DIR})
+    bc_wl_protocol(${_wp}/stable/xdg-shell/xdg-shell.xml xdg-shell)
+    bc_wl_protocol(${_wp}/stable/viewporter/viewporter.xml viewporter)
+    bc_wl_protocol(${_wp}/stable/presentation-time/presentation-time.xml presentation-time)
+    bc_wl_protocol(${_wp}/stable/linux-dmabuf/linux-dmabuf-v1.xml linux-dmabuf-v1)
+    bc_wl_protocol(${_wp}/staging/fractional-scale/fractional-scale-v1.xml fractional-scale-v1)
+    bc_wl_protocol(${_wp}/staging/cursor-shape/cursor-shape-v1.xml cursor-shape-v1)
+    bc_wl_protocol(${_wp}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml xdg-decoration-unstable-v1)
+    bc_wl_protocol(${_wp}/unstable/tablet/tablet-unstable-v2.xml tablet-v2)
+    bc_wl_protocol(${CMAKE_CURRENT_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml wlr-layer-shell-unstable-v1)
+
+    # Client-side protocol code for test clients and hosts that speak Wayland.
+    add_library(brocompositor_wl_protocols STATIC ${BC_PROTO_SOURCES})
+    target_include_directories(brocompositor_wl_protocols PUBLIC ${BC_PROTO_DIR})
+    target_link_libraries(brocompositor_wl_protocols PUBLIC PkgConfig::BC_WLR)
+    set_target_properties(brocompositor_wl_protocols PROPERTIES LINKER_LANGUAGE C POSITION_INDEPENDENT_CODE ON)
+
+    add_library(brocompositor_wayland STATIC
+        src/linux/dispatcher.cpp
+        src/linux/drm_util.cpp
+        src/linux/cpu_mapping.cpp
+        src/linux/client_surface.cpp
+        src/linux/surfaces.cpp
+        src/linux/xdg.cpp
+        src/linux/layers.cpp
+        src/linux/outputs.cpp
+        src/linux/output_images.cpp
+        src/linux/output_manager.cpp
+        src/linux/seat.cpp
+        src/linux/selection.cpp
+        src/linux/setup.cpp
+        src/linux/server.cpp
+    )
+    add_library(brocompositor::wayland ALIAS brocompositor_wayland)
+    add_dependencies(brocompositor_wayland brocompositor_wl_protocols)
+    target_include_directories(brocompositor_wayland PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${BC_PROTO_DIR})
+    target_compile_definitions(brocompositor_wayland PRIVATE WLR_USE_UNSTABLE)
+    target_link_libraries(brocompositor_wayland PUBLIC brocompositor_core PRIVATE PkgConfig::BC_WLR Threads::Threads)
+    brocompositor_warnings(brocompositor_wayland)
+    target_link_libraries(brocompositor INTERFACE brocompositor_wayland)
+endif()
+
 # ---------------------------------------------------------------- Vulkan importer
 # Header-only dependency on the Vulkan headers; the loader is never linked
 # (the host passes vkGetInstanceProcAddr), so bro keeps owning its loader.
@@ -82,26 +165,39 @@ set(_bc_vk_default OFF)
 find_package(Vulkan QUIET)
 find_path(BROCOMPOSITOR_VULKAN_INCLUDE_DIR vulkan/vulkan.h
     HINTS "${Vulkan_INCLUDE_DIR}" "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
-if(WIN32 AND BROCOMPOSITOR_VULKAN_INCLUDE_DIR)
+if((WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND BROCOMPOSITOR_VULKAN_INCLUDE_DIR)
     set(_bc_vk_default ON)
 endif()
-option(BROCOMPOSITOR_WITH_VULKAN "Build the Vulkan surface importer (Windows for now)" ${_bc_vk_default})
+option(BROCOMPOSITOR_WITH_VULKAN
+    "Build the Vulkan surface importer (Win32 D3D11 handles; Linux dmabuf + sync_file)" ${_bc_vk_default})
 
 if(BROCOMPOSITOR_WITH_VULKAN)
     if(NOT BROCOMPOSITOR_VULKAN_INCLUDE_DIR)
         message(FATAL_ERROR "BROCOMPOSITOR_WITH_VULKAN needs the Vulkan headers (VULKAN_SDK or CMAKE_PREFIX_PATH)")
     endif()
-    if(NOT WIN32)
-        message(FATAL_ERROR "The Vulkan importer currently implements the Win32 handle types only")
+    if(WIN32)
+        set(_bc_vk_platform src/vulkan/importer_win32.cpp)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set(_bc_vk_platform src/vulkan/importer_linux.cpp)
+    else()
+        message(FATAL_ERROR "The Vulkan importer implements Win32 and Linux handle types only")
     endif()
-    add_library(brocompositor_vulkan STATIC src/vulkan/importer.cpp)
+    add_library(brocompositor_vulkan STATIC src/vulkan/importer.cpp ${_bc_vk_platform})
     add_library(brocompositor::vulkan ALIAS brocompositor_vulkan)
     target_include_directories(brocompositor_vulkan PUBLIC
-        $<BUILD_INTERFACE:${BROCOMPOSITOR_VULKAN_INCLUDE_DIR}>)
-    target_compile_definitions(brocompositor_vulkan PUBLIC VK_NO_PROTOTYPES
-        PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        $<BUILD_INTERFACE:${BROCOMPOSITOR_VULKAN_INCLUDE_DIR}>
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(brocompositor_vulkan PUBLIC VK_NO_PROTOTYPES)
+    if(WIN32)
+        target_compile_definitions(brocompositor_vulkan PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
     target_link_libraries(brocompositor_vulkan PUBLIC brocompositor_core)
     brocompositor_warnings(brocompositor_vulkan)
+    if(NOT MSVC)
+        # `VkFoo info{VK_STRUCTURE_TYPE_FOO}` value-initializes the rest; the
+        # -Wextra warning about it is noise for Vulkan code.
+        target_compile_options(brocompositor_vulkan PRIVATE -Wno-missing-field-initializers)
+    endif()
     target_link_libraries(brocompositor INTERFACE brocompositor_vulkan)
 endif()
 

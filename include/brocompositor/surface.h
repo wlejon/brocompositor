@@ -20,8 +20,9 @@
 // Windows NT handles stay valid until the image is retired (see
 // images_generation()) and all its leases are released; importing a Win32
 // handle into Vulkan does not transfer ownership, and the imported memory
-// remains valid after the source closes its handle. POSIX fds (Linux, next
-// chunk) must be dup()ed by the host before an import that takes ownership.
+// remains valid after the source closes its handle. POSIX fds (Linux) stay
+// valid while the image is listed or leased; the host dup()s them before an
+// import that takes ownership (the Vulkan importer does).
 //
 // An image is never written while leased, so a host that holds a lease can
 // sample it for as long as it wants; the source drops frames rather than
@@ -42,6 +43,8 @@ enum class PixelFormat : uint32_t {
     BGRA8Unorm = 1,  // DXGI_FORMAT_B8G8R8A8_UNORM / VK_FORMAT_B8G8R8A8_UNORM / DRM ARGB8888
     RGBA8Unorm = 2,
     BGRX8Unorm = 3,  // alpha ignored (DRM XRGB8888)
+    RGBX8Unorm = 4,  // alpha ignored (DRM XBGR8888)
+    Other = 5,       // see SharedImage::drm_format
 };
 
 enum class ImageHandleType : uint32_t {
@@ -89,6 +92,7 @@ struct SharedImage {
     uint32_t width = 0;
     uint32_t height = 0;
     PixelFormat format = PixelFormat::Unknown;
+    uint32_t drm_format = 0;  // Linux: DRM fourcc (authoritative there; `format` is its coarse mapping)
     AdapterId adapter;
 };
 

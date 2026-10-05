@@ -16,6 +16,37 @@ bc_test(test_layout SOURCES core/test_layout.cpp LIBS brocompositor_core)
 bc_test(test_window_manager SOURCES core/test_window_manager.cpp LIBS brocompositor_core)
 bc_test(test_event_queue SOURCES core/test_event_queue.cpp LIBS brocompositor_core)
 
+if(TARGET brocompositor_wayland)
+    # The scripted Wayland client the server tests drive (plus real
+    # third-party clients when installed: weston demos, foot, wl-clipboard,
+    # wlr-randr, GTK).
+    add_executable(bc_wl_client linux/wl_client.cpp linux/wl_client_buffers.cpp)
+    target_include_directories(bc_wl_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(bc_wl_client PRIVATE brocompositor_wl_protocols PkgConfig::BC_WLR)
+    brocompositor_warnings(bc_wl_client)
+
+    add_library(bc_wl_harness STATIC linux/wl_harness.cpp linux/child.cpp)
+    target_include_directories(bc_wl_harness PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(bc_wl_harness PUBLIC BC_WL_CLIENT="$<TARGET_FILE:bc_wl_client>")
+    target_link_libraries(bc_wl_harness PUBLIC brocompositor_wayland brocompositor_core Threads::Threads)
+    add_dependencies(bc_wl_harness bc_wl_client)
+    brocompositor_warnings(bc_wl_harness)
+
+    foreach(t window input clipboard layer outputs frames clients nested drm)
+        if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/linux/test_wl_${t}.cpp)
+            continue()
+        endif()
+        bc_test(test_wl_${t} SOURCES linux/test_wl_${t}.cpp LIBS bc_wl_harness)
+    endforeach()
+
+    if(TARGET brocompositor_vulkan)
+        # dmabuf <-> Vulkan on every capable device (GPU, lavapipe).
+        bc_test(test_wl_vulkan SOURCES linux/test_wl_vulkan.cpp linux/vk_host.cpp
+            LIBS bc_wl_harness brocompositor_vulkan PkgConfig::BC_WLR ${CMAKE_DL_LIBS})
+        target_compile_options(test_wl_vulkan PRIVATE -Wno-missing-field-initializers)
+    endif()
+endif()
+
 if(WIN32)
     # A separate process that owns the windows the backend tests manage, so
     # every test exercises the real cross-process (foreign window) paths and

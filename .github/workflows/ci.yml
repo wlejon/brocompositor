@@ -44,7 +44,9 @@ concurrency:
 #
 # Every test that cannot run on a runner (no Accessibility or Screen Recording
 # grant on macOS, no Vulkan device on Windows, no vkms) exits 77 and ctest
-# lists it as skipped, never as passed.
+# lists it as skipped, never as passed. Every test step ends with the skipped
+# tests and skipped checks inside tests, each with its own reason
+# (.github/ci/ctest.sh): that is what a job really covered.
 
 jobs:
   test:
@@ -112,7 +114,8 @@ jobs:
         run: cmake --build build --config ${{ matrix.config }} --parallel 4
 
       - name: Test
-        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+        shell: bash
+        run: brocompositor/.github/ci/ctest.sh --test-dir build -C ${{ matrix.config }}
 
   # ── Wayland server ────────────────────────────────────────────────────────
   wayland:
@@ -172,7 +175,8 @@ jobs:
         run: cmake --build build --config Release --parallel 4
 
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+        shell: bash
+        run: brocompositor/.github/ci/ctest.sh --test-dir build -C Release
 
   # ── Coverage ──────────────────────────────────────────────────────────────
   #

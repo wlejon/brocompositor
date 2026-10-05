@@ -64,7 +64,7 @@ set +e
 runuser -u ci -- env \
     ${BROCOMPOSITOR_DRM_DEVICE:+BROCOMPOSITOR_DRM_DEVICE="$BROCOMPOSITOR_DRM_DEVICE"} \
     ${LIBSEAT_BACKEND:+LIBSEAT_BACKEND="$LIBSEAT_BACKEND"} \
-    ctest --test-dir build --output-on-failure
+    /w/brocompositor/.github/ci/ctest.sh --test-dir build
 rc=$?
 set -e
 [ -n "$seatd_pid" ] && kill "$seatd_pid" 2>/dev/null

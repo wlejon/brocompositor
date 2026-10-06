@@ -58,6 +58,8 @@ jobs:
           repository: wlejon/brodisplays
           path: brodisplays
 
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
+
       - uses: actions/checkout@v7
         if: runner.os == 'Windows'
         with:
@@ -82,16 +84,19 @@ jobs:
       #
       #   brodisplays    analysed by brodisplays' own CodeQL workflow; here it
       #                  would double-report every finding against the wrong repo.
+      #   bronze_runtime_shared
+      #                  bronze (and brass under it), for brocompositor_api;
+      #                  analysed in their own repositories.
       #   *_protocols    wayland-scanner output: interface tables generated from
       #                  the protocol XML, not code anyone here writes.
       - name: Pre-build sibling and generated code (outside the traced build)
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake --build build --config Debug --parallel 4 --target brodisplays
+            cmake --build build --config Debug --parallel 4 --target brodisplays bronze_runtime_shared
           else
             cmake --build build --parallel 4 \
-              --target brodisplays brocompositor_wl_server_protocols brocompositor_wl_protocols
+              --target brodisplays bronze_runtime_shared brocompositor_wl_server_protocols brocompositor_wl_protocols
           fi
 
       - name: Initialize CodeQL

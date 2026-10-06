@@ -389,7 +389,11 @@ if(BROCOMPOSITOR_BUILD_TESTS AND BROCOMPOSITOR_WITH_WAYLAND AND NOT TARGET brodi
 endif()
 
 # --- Standalone Bronze JavaScript API ---
-option(BROCOMPOSITOR_ENABLE_API "Build Bronze JavaScript API" ON)
+# On by default only when brocompositor is the top-level project. A library
+# that consumes brocompositor then never needs bronze checked out; bro, which
+# does want the binding, sets BROCOMPOSITOR_ENABLE_API ON itself. The same
+# rule keeps brodisplays' own api off when it is added above as a dependency.
+option(BROCOMPOSITOR_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
 if(BROCOMPOSITOR_ENABLE_API)
     if(NOT TARGET bronze_runtime_shared)
         set(BRONZE_BUILD_SHARED_RUNTIME ON CACHE BOOL "" FORCE)

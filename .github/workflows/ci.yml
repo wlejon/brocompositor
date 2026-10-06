@@ -17,6 +17,15 @@ concurrency:
 #     $GITHUB_WORKSPACE/
 #       brocompositor/   <- this repo, checked out into a named path, not the root
 #       brodisplays/
+#       bronze/          <- the JavaScript runtime brocompositor_api binds
+#       brass/           <- bronze's code generator
+#
+# bronze and brass are laid out by bronze's checkout-toolchain action for the
+# api (BROCOMPOSITOR_ENABLE_API, on in a top-level build) and compiled inside
+# this build tree with the job's own compiler and CRT; the api is bound across
+# bronze's C++ embed boundary, so a prebuilt bronze would be an unverifiable
+# ABI hazard. brodisplays' own api stays off here: it defaults on only when
+# brodisplays is the top-level project.
 #
 # Hence `path:` on the checkouts and `cmake -S brocompositor`. brodisplays is
 # taken from main, which mirrors how the stack is developed (everything tracks
@@ -77,6 +86,8 @@ jobs:
         with:
           repository: wlejon/brodisplays
           path: brodisplays
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - uses: actions/checkout@v7
         if: runner.os == 'Windows'
@@ -139,6 +150,8 @@ jobs:
           repository: wlejon/brodisplays
           path: brodisplays
 
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
+
       - name: Load vkms and udmabuf
         id: dev
         run: brocompositor/.github/ci/host-devices.sh
@@ -164,6 +177,11 @@ jobs:
         with:
           path: brocompositor
           submodules: recursive
+
+      # bronze and brass are the documented exception to the submodule rule
+      # (the api has to compile against the bronze of the program that loads
+      # it), so they are laid out beside the repo as in every other job.
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Configure
         shell: bash
@@ -197,6 +215,8 @@ jobs:
         with:
           repository: wlejon/brodisplays
           path: brodisplays
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Load vkms and udmabuf
         id: dev

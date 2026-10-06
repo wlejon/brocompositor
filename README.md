@@ -2,10 +2,15 @@
 
 [![CI](https://github.com/wlejon/brocompositor/actions/workflows/ci.yml/badge.svg)](https://github.com/wlejon/brocompositor/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/wlejon/brocompositor/actions/workflows/codeql.yml/badge.svg)](https://github.com/wlejon/brocompositor/actions/workflows/codeql.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Window-management and compositing substrate for a desktop environment built on
-the [bro](https://github.com/wlejon/bro) runtime. A standalone C++20 library: no dependency on bro or bronze, no
-JS binding, its own CMake and ctest.
+Window-management and compositing substrate for desktop environments: portable
+layout algorithms, window management policies, native OS shell backends (Windows
+DWM, macOS WindowServer), and a full Wayland display server (wlroots 0.18). A
+standalone C++20 library with optional Vulkan image/sync import and standalone
+Bronze JavaScript API (`brocompositor_api`).
+
+Part of the **[bro ecosystem](https://github.com/wlejon/bro/blob/main/docs/ecosystem.md)**.
 
 ## Structure
 
@@ -67,9 +72,8 @@ include/brocompositor/
 ```
 
 Targets: `brocompositor::core` (portable, pure), `brocompositor::win` (WIN32),
-`brocompositor::mac` (APPLE), `brocompositor_wayland` (Linux),
-`brocompositor::vulkan` (optional), `brocompositor::brocompositor` (all
-available).
+`brocompositor::mac` (APPLE), `brocompositor::wayland` (Linux, alias: `brocompositor_wayland`),
+`brocompositor::vulkan` (optional), `brocompositor::brocompositor` (interface target linking all available components).
 
 ### Shell role: asynchronous by construction
 
@@ -426,57 +430,89 @@ host leases the newest frame (`acquire`), GPU-waits its sync, samples, and
 
 ## Building
 
-brodisplays is found the way every bro sibling is: an existing `brodisplays`
-target (a superbuild already added it), else a checkout beside this one
-(`../brodisplays`, overridable with `-DBRODISPLAYS_DIR=<path>`), else the
-`third_party/brodisplays` submodule. Either
+### Sibling vs. Submodule Layout
+
+`brocompositor` depends on [brodisplays](https://github.com/wlejon/brodisplays):
+- **Windows & macOS**: `brodisplays` is required to query display bounds, DPI/scale, primary status, and listen for display hotplug events.
+- **Linux**: `brodisplays` is used for the `test_wl_brodisplays` client integration test.
+
+`brodisplays` resolves in standard ecosystem order:
+1. An existing `brodisplays` CMake target (from a superbuild);
+2. Sibling checkout beside `brocompositor` (`../brodisplays`, overridable with `-DBRODISPLAYS_DIR=<path>`);
+3. Submodule fallback at `third_party/brodisplays` (`git submodule update --init --recursive`).
+
+#### Sibling Layout (Recommended for dev)
 
 ```bash
-git clone https://github.com/wlejon/brodisplays          # beside brocompositor
-# or, inside brocompositor:
-git submodule update --init --recursive
+git clone https://github.com/wlejon/brodisplays
+git clone https://github.com/wlejon/brocompositor
 ```
 
-Windows (Visual Studio generator, one build dir, config at build time):
+#### Submodule Layout (Standalone clone)
 
 ```bash
-cmake -B build -DCMAKE_PREFIX_PATH=<vcpkg>/installed/x64-windows   # Vulkan headers for the importer
+git clone --recursive https://github.com/wlejon/brocompositor
+```
+
+### Consuming `brocompositor` in CMake
+
+Consumers can embed `brocompositor` and link against either the umbrella interface target `brocompositor::brocompositor` or specific role libraries:
+
+```cmake
+add_subdirectory(brocompositor)
+
+# Links all available platform targets and importers:
+target_link_libraries(my_app PRIVATE brocompositor::brocompositor)
+
+# Or link specific targets:
+# target_link_libraries(my_app PRIVATE brocompositor::core)      # Pure layout & policy
+# target_link_libraries(my_app PRIVATE brocompositor::win)       # Windows DWM shell
+# target_link_libraries(my_app PRIVATE brocompositor::mac)       # macOS WindowServer shell
+# target_link_libraries(my_app PRIVATE brocompositor::wayland)   # Linux Wayland display server
+# target_link_libraries(my_app PRIVATE brocompositor::vulkan)    # Vulkan external memory/sync importer
+```
+
+### Build Commands
+
+#### Windows (Visual Studio 2022, MSVC)
+
+```powershell
+cmake -B build -DCMAKE_PREFIX_PATH=<vcpkg>/installed/x64-windows
 cmake --build build --config Release
-ctest --test-dir build -C Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-The Vulkan importer builds when Vulkan headers are found (`VULKAN_SDK`,
-`CMAKE_PREFIX_PATH`, or `-DBROCOMPOSITOR_VULKAN_INCLUDE_DIR=<dir>`); it never
-links a loader.
+The Vulkan importer builds when Vulkan headers are found (`VULKAN_SDK`, `CMAKE_PREFIX_PATH`, or `-DBROCOMPOSITOR_VULKAN_INCLUDE_DIR=<dir>`); it never links a loader.
 
-Linux (GCC 12+ or Clang; Debian trixie package names):
+#### Linux (GCC 12+ or Clang, wlroots 0.18, Ninja)
 
 ```bash
-sudo apt install libwlroots-0.18-dev wayland-protocols libwayland-dev libxkbcommon-dev \
-    libpixman-1-dev libdrm-dev libgbm-dev libvulkan-dev libxcb1-dev xwayland
-cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-release
-ctest --test-dir build-release
+# Debian / Ubuntu (Debian trixie or systems with wlroots 0.18)
+sudo apt install cmake ninja-build pkg-config libwlroots-0.18-dev wayland-protocols \
+    libwayland-dev libxkbcommon-dev libpixman-1-dev libdrm-dev libgbm-dev \
+    libvulkan-dev libxcb1-dev xwayland
+cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --parallel 4
+ctest --test-dir build-release --output-on-failure
 ```
 
-`BROCOMPOSITOR_WITH_WAYLAND` (default ON when wlroots-0.18 is found) builds
-the server role; protocol headers are generated with wayland-scanner at
-build time. Without wlroots 0.18 (Ubuntu 24.04 ships 0.17) the Linux build
-is the portable core, the shell plumbing and the Vulkan importer, and CI
-builds it that way on Ubuntu; the whole server builds and is tested on Debian
-trixie. The Windows and macOS builds need brodisplays; the Linux build uses
-it only for `test_wl_brodisplays` (add `libxcb-randr0-dev libxau-dev` for it).
-The clients the Linux tests drive are listed under [Tests](#tests); CI
-installs them with `xwayland xvfb xterm x11-apps xclip xsel weston foot
-wl-clipboard wlr-randr gtk-3-examples qt6-base-examples swaylock swayidle grim
-wtype wlrctl wlsunset mesa-vulkan-drivers` (`.github/ci/linux-full.sh`).
+`BROCOMPOSITOR_WITH_WAYLAND` (default ON when wlroots-0.18 is found) builds the server role; protocol headers are generated with `wayland-scanner` at build time. Without wlroots 0.18 (Ubuntu 24.04 ships 0.17), the Linux build compiles the portable core, shell plumbing, and Vulkan importer. The Windows and macOS builds need `brodisplays`; the Linux build uses it for `test_wl_brodisplays` (requires `libxcb-randr0-dev libxau-dev`).
 
-macOS (Apple clang, Command Line Tools are enough; macOS 12.3+ for capture):
+#### macOS (Apple Clang 15+, macOS 12.3+ for ScreenCaptureKit)
 
 ```bash
-brew install cmake ninja vulkan-loader molten-vk vulkan-headers   # Vulkan only for the importer + its tests
+brew install cmake ninja vulkan-loader molten-vk vulkan-headers
 cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/homebrew
-cmake --build build-release && ctest --test-dir build-release
+cmake --build build-release --parallel 4
+ctest --test-dir build-release --output-on-failure
 ```
+
+### Build Options
+
+- `-DBROCOMPOSITOR_WITH_WAYLAND=ON|OFF` (Linux, default ON if wlroots 0.18 is found): build Wayland display server role.
+- `-DBROCOMPOSITOR_ENABLE_API=ON|OFF` (default ON): build standalone Bronze JavaScript API (`brocompositor_api`, requires `../bronze`).
+- `-DBROCOMPOSITOR_BUILD_TESTS=ON|OFF` (default ON when top-level): build test suites and test client binaries.
+- `-DBROCOMPOSITOR_COVERAGE=ON|OFF` (default OFF): instrument GCC/Clang with gcov for code coverage.
 
 ## Tests
 

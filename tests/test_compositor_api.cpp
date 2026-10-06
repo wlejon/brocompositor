@@ -65,9 +65,12 @@ int main() {
     CHECK(ev::isObject(comp.get()));
     std::cout << "  Mounted bro.compositor successfully." << std::endl;
 
+    CHECK(ev::isBool(ev::getProperty(comp.get(), "available")));
+    CHECK(ev::toBool(ev::getProperty(comp.get(), "available")) == true);
+
     // Verify all core methods exist
     const char* methods[] = {
-        "available", "isAvailable", "getWindows", "getWindow", "focusWindow",
+        "isAvailable", "getWindows", "getWindow", "focusWindow",
         "moveWindow", "resizeWindow", "closeWindow", "setFloating", "swapWindows",
         "focusDirection", "getWorkspaces", "getWorkspace", "switchWorkspace",
         "createWorkspace", "removeWorkspace", "moveWindowToWorkspace", "setLayoutMode",
@@ -84,7 +87,7 @@ int main() {
     {
         auto r = evalScript(
             "(function() {\n"
-            "  if (bro.compositor.available() !== true) return 'available failed';\n"
+            "  if (bro.compositor.available !== true) return 'available failed';\n"
             "  if (bro.compositor.isAvailable() !== true) return 'isAvailable failed';\n"
             "  return 'ok';\n"
             "})();\n"

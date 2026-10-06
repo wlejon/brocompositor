@@ -44,6 +44,14 @@ std::shared_ptr<brocompositor::WindowManager> activeWindowManager() {
     if (g_custom_wm) return g_custom_wm;
     if (!g_default_wm) {
         g_default_wm = std::make_shared<brocompositor::WindowManager>();
+        brocompositor::MonitorSnapshot mon;
+        mon.id = 1;
+        mon.name = "default";
+        mon.bounds = brocompositor::Rect{0, 0, 1920, 1080};
+        mon.work_area = brocompositor::Rect{0, 0, 1920, 1080};
+        mon.primary = true;
+        mon.dpi = 96;
+        g_default_wm->handle(brocompositor::MonitorsChanged{{mon}});
     }
     return g_default_wm;
 }
@@ -232,9 +240,7 @@ void installCompositor() {
     ev::Persistent compObj(ensureBroCompositor());
     ObjectBuilder comp(compObj.get());
 
-    comp.def("available", 0, [](Value, std::span<const Value>) -> Value {
-        return ev::fromBool(true);
-    });
+    comp.set("available", true);
     comp.def("isAvailable", 0, [](Value, std::span<const Value>) -> Value {
         return ev::fromBool(true);
     });

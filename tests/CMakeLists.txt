@@ -167,3 +167,54 @@ if(WIN32)
         set_tests_properties(test_vulkan_import PROPERTIES RUN_SERIAL TRUE)
     endif()
 endif()
+
+if(BROCOMPOSITOR_ENABLE_API)
+    add_executable(brocompositor_test_api
+        test_compositor_api.cpp
+    )
+    target_include_directories(brocompositor_test_api PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/api
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(brocompositor_test_api PRIVATE
+        brocompositor_api
+        brocompositor_core
+        bronze_runtime_shared
+    )
+    brocompositor_warnings(brocompositor_test_api)
+    if(WIN32)
+        target_compile_definitions(brocompositor_test_api PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE _WIN32_WINNT=0x0A00)
+        target_link_libraries(brocompositor_test_api PRIVATE user32 shcore)
+        add_custom_command(TARGET brocompositor_test_api POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:bronze_runtime_shared>
+                $<TARGET_FILE_DIR:brocompositor_test_api>
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_LINKER_FILE:bronze_runtime_shared>
+                $<TARGET_FILE_DIR:brocompositor_test_api>
+        )
+    endif()
+
+    if(NOT BRASS_HOST_BACKEND)
+        message(STATUS "brocompositor: brocompositor_test_api not registered (brass has no code generator for this target)")
+    else()
+        add_test(NAME brocompositor_test_api COMMAND brocompositor_test_api)
+        set_tests_properties(brocompositor_test_api PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+
+        add_test(NAME brocompositor_test_api_gc_stress COMMAND brocompositor_test_api)
+        set_tests_properties(brocompositor_test_api_gc_stress PROPERTIES
+            TIMEOUT 60
+            SKIP_RETURN_CODE 77
+            ENVIRONMENT "BRONZE_GC_STRESS=1;BRONZE_GC_POISON=1"
+        )
+        if(WIN32)
+            set_tests_properties(brocompositor_test_api PROPERTIES
+                ENVIRONMENT "PATH=$<TARGET_FILE_DIR:bronze_runtime_shared>;$<TARGET_FILE_DIR:brocompositor_test_api>;$ENV{PATH}")
+            set_property(TEST brocompositor_test_api_gc_stress APPEND PROPERTY
+                ENVIRONMENT "PATH=$<TARGET_FILE_DIR:bronze_runtime_shared>;$<TARGET_FILE_DIR:brocompositor_test_api>;$ENV{PATH}")
+        endif()
+    endif()
+endif()
+

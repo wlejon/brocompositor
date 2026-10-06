@@ -77,6 +77,9 @@ jobs:
       # macOS: test_mac_displays' opt-in mode switch (per-process, undone at
       # exit); hosted runners are disposable.
       BC_MAC_DISPLAY_MODE_TEST: "1"
+      # The tests that act on the real desktop (work-area reservations, taking
+      # the foreground) skip on a user's machine unless opted into.
+      BROCOMPOSITOR_TEST_MUTATE: "1"
     steps:
       - uses: actions/checkout@v7
         with:

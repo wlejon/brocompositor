@@ -69,6 +69,7 @@ void focus() {
 }  // namespace
 
 int main() {
+    bctest::require_mutate("test_mac_focus", "takes the foreground from the user");
     mac_permissions();
     require_accessibility();
     require_unlocked();

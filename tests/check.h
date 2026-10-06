@@ -37,6 +37,19 @@ inline int finish(const char* name) {
     return 1;
 }
 
+// Tests that act on the user's real desktop (reserving work-area strips,
+// which moves the user's maximized windows; taking the foreground from the
+// user) run only with BROCOMPOSITOR_TEST_MUTATE=1. CI runners are disposable
+// and set it. Otherwise the test skips (exit 77) and says why.
+inline void require_mutate(const char* name, const char* what) {
+    const char* v = std::getenv("BROCOMPOSITOR_TEST_MUTATE");
+    if (v && std::string(v) == "1") return;
+    std::printf("[%s] SKIPPED: %s on the user's real desktop; set BROCOMPOSITOR_TEST_MUTATE=1 to run it\n",
+                name, what);
+    std::fflush(stdout);
+    std::exit(77);
+}
+
 }  // namespace bctest
 
 #define CHECK(cond)                                                    \

@@ -185,6 +185,7 @@ int run() {
 }  // namespace
 
 int main() {
+    bctest::require_mutate("test_win_focus", "takes the foreground from the user");
     init_windows_test();
     if (!interactive_desktop()) {
         std::printf("[test_win_focus] SKIPPED: the input desktop is not the user's Default desktop "

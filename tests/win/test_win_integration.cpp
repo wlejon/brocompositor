@@ -158,6 +158,7 @@ void run() {
 }  // namespace
 
 int main() {
+    bctest::require_mutate("test_win_integration", "reserves a work-area strip and takes the foreground");
     init_windows_test();
     ForegroundGuard guard;
     run();

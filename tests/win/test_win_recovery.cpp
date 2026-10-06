@@ -172,6 +172,7 @@ void run() {
 }  // namespace
 
 int main() {
+    bctest::require_mutate("test_win_recovery", "reserves a work-area strip from a process it then kills");
     init_windows_test();
     run();
     return finish("test_win_recovery");

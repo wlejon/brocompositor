@@ -132,6 +132,7 @@ void destructor_and_emergency_release() {
 }  // namespace
 
 int main() {
+    bctest::require_mutate("test_win_appbar", "reserves work-area strips");
     init_windows_test();
     g_original = monitor_work_areas();
     reserve_each_monitor();

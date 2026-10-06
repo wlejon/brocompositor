@@ -39,7 +39,7 @@ if(TARGET brocompositor_wayland)
     endforeach()
 
     add_library(bc_wl_harness STATIC linux/wl_harness.cpp linux/wl_harness_desktop.cpp linux/child.cpp)
-    target_include_directories(bc_wl_harness PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(bc_wl_harness PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_compile_definitions(bc_wl_harness PUBLIC BC_WL_CLIENT="$<TARGET_FILE:bc_wl_client>"
         BC_WL_INPUT_CLIENT="$<TARGET_FILE:bc_wl_input_client>"
         BC_WL_SESSION_CLIENT="$<TARGET_FILE:bc_wl_session_client>")
@@ -64,6 +64,10 @@ if(TARGET brocompositor_wayland)
         endif()
         bc_test(test_wl_${t} SOURCES linux/test_wl_${t}.cpp LIBS bc_wl_harness)
     endforeach()
+
+    bc_test(test_direct_drm SOURCES linux/test_direct_drm.cpp
+        LIBS bc_wl_harness brodmabuf::brodmabuf broseat::broseat brocompositor_wl_server_protocols PkgConfig::BC_WLR)
+    target_compile_definitions(test_direct_drm PRIVATE WLR_USE_UNSTABLE)
 
     if(TARGET brodisplays)
         # brodisplays as a client of this server: topology, mode changes,

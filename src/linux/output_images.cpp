@@ -230,7 +230,7 @@ bool Server::ensure_output_images(OutputRec& out, int w, int h) {
         return true;
     free_output_images(out);
     uint32_t format = config.output_format;
-    bool is_drm = wlr_output_is_drm(out.output);
+    bool is_drm = is_drm_output(out.output);
     int backend_fd = wlr_backend_get_drm_fd(backend);
 
     bool want_dmabuf = false;

@@ -155,6 +155,18 @@ std::string render_node_of_fd(int fd) {
     std::string s = name;
     free(name);
     return s;
+}  // namespace
+
+}  // namespace brocompositor::wl
+
+#include "linux/drm/drm_output.h"
+#include "linux/wlr.h"
+
+namespace brocompositor::wl {
+
+bool is_drm_output(wlr_output* output) {
+    if (!output) return false;
+    return drm::is_direct_drm_output(output) || wlr_output_is_drm(output);
 }
 
 }  // namespace brocompositor::wl

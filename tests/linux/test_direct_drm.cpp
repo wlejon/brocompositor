@@ -37,15 +37,28 @@ void test_drm_output_recognition() {
     CHECK(!is_drm_output(&fake));
 }
 
+// Reads the KMS resources of a real card, without taking DRM master or
+// changing what is on screen. Scanout itself (a modeset and page flips) needs
+// the seat's master and would blank a running desktop, so it is not tested
+// here. Each way out says why, so a pass is never mistaken for coverage.
 void test_kms_pipeline_discovery() {
     std::string card = find_drm_card_path();
-    if (card.empty()) return;
+    if (card.empty()) {
+        std::printf("SKIPPED pipeline discovery: no /dev/dri/card* on this machine\n");
+        return;
+    }
 
     auto kms_res = brodmabuf::KmsDevice::open(card);
-    if (!kms_res.ok()) return;
+    if (!kms_res.ok()) {
+        std::printf("SKIPPED pipeline discovery: %s could not be opened\n", card.c_str());
+        return;
+    }
 
     auto& dev = *kms_res.value();
-    if (!dev.is_atomic_supported()) return;
+    if (!dev.is_atomic_supported()) {
+        std::printf("SKIPPED pipeline discovery: %s has no atomic modesetting\n", card.c_str());
+        return;
+    }
 
     auto pipelines = discover_drm_pipelines(dev);
     std::printf("Discovered %zu display pipeline(s) on %s\n", pipelines.size(), card.c_str());

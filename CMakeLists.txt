@@ -204,7 +204,7 @@ if(UNIX AND NOT APPLE)
             endif()
         endforeach()
         pkg_check_modules(BC_WLR QUIET IMPORTED_TARGET
-            wlroots-0.18 wayland-server wayland-client xkbcommon pixman-1 libdrm gbm libinput libudev)
+            wlroots-0.18 wayland-server wayland-client xkbcommon pixman-1 libdrm gbm)
         pkg_get_variable(BC_WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
     endif()
     find_program(BC_WAYLAND_SCANNER wayland-scanner)
@@ -290,47 +290,9 @@ if(BROCOMPOSITOR_WITH_WAYLAND)
     target_link_libraries(brocompositor_wl_protocols PUBLIC PkgConfig::BC_WLR brocompositor_wl_server_protocols)
     set_target_properties(brocompositor_wl_protocols PROPERTIES LINKER_LANGUAGE C POSITION_INDEPENDENT_CODE ON)
 
-    # --- brodmabuf (DRM/KMS scanout, DMA-BUF allocator) ---
-    if(NOT TARGET brodmabuf::brodmabuf)
-        set(BRODMABUF_DIR "${CMAKE_SOURCE_DIR}/../brodmabuf" CACHE PATH "Path to standalone brodmabuf repo")
-        if(EXISTS "${BRODMABUF_DIR}/CMakeLists.txt")
-            message(STATUS "brocompositor: brodmabuf from ${BRODMABUF_DIR}")
-            set(BRODMABUF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-            add_subdirectory("${BRODMABUF_DIR}" "${CMAKE_BINARY_DIR}/brodmabuf" EXCLUDE_FROM_ALL)
-        elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/brodmabuf/CMakeLists.txt")
-            message(STATUS "brocompositor: brodmabuf from ${CMAKE_SOURCE_DIR}/third_party/brodmabuf (submodule)")
-            set(BRODMABUF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-            add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/brodmabuf" "${CMAKE_BINARY_DIR}/brodmabuf" EXCLUDE_FROM_ALL)
-        else()
-            message(FATAL_ERROR "brodmabuf not found at ${BRODMABUF_DIR} or ${CMAKE_SOURCE_DIR}/third_party/brodmabuf")
-        endif()
-    endif()
-
-    # --- broseat (seat / logind session acquisition) ---
-    if(NOT TARGET broseat::broseat)
-        set(BROSEAT_DIR "${CMAKE_SOURCE_DIR}/../broseat" CACHE PATH "Path to standalone broseat repo")
-        if(EXISTS "${BROSEAT_DIR}/CMakeLists.txt")
-            message(STATUS "brocompositor: broseat from ${BROSEAT_DIR}")
-            set(BROSEAT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-            set(BROSEAT_ENABLE_API OFF CACHE BOOL "" FORCE)
-            add_subdirectory("${BROSEAT_DIR}" "${CMAKE_BINARY_DIR}/broseat" EXCLUDE_FROM_ALL)
-        elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/broseat/CMakeLists.txt")
-            message(STATUS "brocompositor: broseat from ${CMAKE_SOURCE_DIR}/third_party/broseat (submodule)")
-            set(BROSEAT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-            set(BROSEAT_ENABLE_API OFF CACHE BOOL "" FORCE)
-            add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/broseat" "${CMAKE_BINARY_DIR}/broseat" EXCLUDE_FROM_ALL)
-        else()
-            message(FATAL_ERROR "broseat not found at ${BROSEAT_DIR} or ${CMAKE_SOURCE_DIR}/third_party/broseat")
-        endif()
-    endif()
-
     add_library(brocompositor_wayland STATIC
         src/linux/dispatcher.cpp
         src/linux/drm_util.cpp
-        src/linux/drm/drm_device.cpp
-        src/linux/drm/drm_output.cpp
-        src/linux/drm/drm_input.cpp
-        src/linux/drm/drm_backend.cpp
         src/linux/cpu_mapping.cpp
         src/linux/client_surface.cpp
         src/linux/surfaces.cpp
@@ -365,7 +327,7 @@ if(BROCOMPOSITOR_WITH_WAYLAND)
     if(BC_WLR_HAVE_XWAYLAND STREQUAL "true")
         target_compile_definitions(brocompositor_wayland PRIVATE BC_HAVE_XWAYLAND=1)
     endif()
-    target_link_libraries(brocompositor_wayland PUBLIC brocompositor_core brodmabuf::brodmabuf broseat::broseat
+    target_link_libraries(brocompositor_wayland PUBLIC brocompositor_core
         PRIVATE PkgConfig::BC_WLR brocompositor_wl_server_protocols Threads::Threads)
     brocompositor_warnings(brocompositor_wayland)
     target_link_libraries(brocompositor INTERFACE brocompositor_wayland)

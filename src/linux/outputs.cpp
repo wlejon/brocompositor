@@ -82,7 +82,7 @@ bool Server::apply_output_state(OutputRec& out, wlr_output_state* st) {
             }
             set_image_state(out.id, slot_desc(free_slot).id, SlotState::Free);
             // A nested parent may refuse our dmabufs: retry with shm images.
-            if (attempt == 0 && !is_drm_output(o) && !out.use_shm && !out.slots.empty() &&
+            if (attempt == 0 && !wlr_output_is_drm(o) && !out.use_shm && !out.slots.empty() &&
                 slot_desc(out.slots[0]).type == ImageHandleType::DmaBuf) {
                 out.use_shm = true;
                 free_output_images(out);

@@ -8,8 +8,6 @@
 #include <cstdint>
 #include <string>
 
-struct wlr_output;
-
 namespace brocompositor::wl {
 
 PixelFormat pixel_format_of(uint32_t drm_fourcc);
@@ -37,7 +35,5 @@ uint64_t dev_of_fd(int fd);
 std::string find_render_node();
 // Render node path for an open DRM fd (primary or render), "" when none.
 std::string render_node_of_fd(int fd);
-
-bool is_drm_output(wlr_output* output);
 
 }  // namespace brocompositor::wl

@@ -1,7 +1,6 @@
 // Server bring-up and teardown, all on the server thread: display, backend
 // (headless / nested / DRM+libinput), render node, protocol globals.
 #include "linux/client_surface.h"
-#include "linux/drm/drm_backend.h"
 #include "linux/drm_util.h"
 #include "linux/server_impl.h"
 
@@ -52,19 +51,27 @@ bool Server::init_backend(std::string* error) {
         case BackendKind::Wayland: backend = wlr_wl_backend_create(loop, nullptr); break;
         case BackendKind::X11: backend = wlr_x11_backend_create(loop, nullptr); break;
         case BackendKind::Drm: {
-            backend = drm::create_direct_drm_backend(loop, config, error);
-            break;
-        }
-        case BackendKind::Auto: {
-            if (std::getenv("WAYLAND_DISPLAY")) {
-                backend = wlr_wl_backend_create(loop, nullptr);
-            } else if (std::getenv("DISPLAY")) {
-                backend = wlr_x11_backend_create(loop, nullptr);
-            } else {
-                backend = drm::create_direct_drm_backend(loop, config, error);
+            session = wlr_session_create(loop);
+            if (!session) {
+                *error = "cannot create a session (libseat: seatd/logind, or LIBSEAT_BACKEND=noop as root)";
+                return false;
             }
+            wlr_device* gpus[8];
+            ssize_t n = wlr_session_find_gpus(session, 8, gpus);
+            if (n <= 0) {
+                *error = "no DRM device found";
+                return false;
+            }
+            backend = wlr_multi_backend_create(loop);
+            wlr_backend* drm = wlr_drm_backend_create(session, gpus[0], nullptr);
+            if (!drm || !wlr_multi_backend_add(backend, drm)) {
+                *error = "cannot create the DRM backend";
+                return false;
+            }
+            if (wlr_backend* li = wlr_libinput_backend_create(session)) wlr_multi_backend_add(backend, li);
             break;
         }
+        case BackendKind::Auto: backend = wlr_backend_autocreate(loop, &session); break;
     }
     if (!backend) {
         *error = "cannot create the wlroots backend";

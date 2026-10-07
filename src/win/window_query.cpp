@@ -17,6 +17,9 @@ bool is_shell_class(const std::wstring& cls) {
 
 bool is_manageable(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == GetCurrentProcessId()) return false;
     if (GetAncestor(hwnd, GA_PARENT) != GetDesktopWindow()) return false;
     LONG style = GetWindowLongW(hwnd, GWL_STYLE);
     LONG ex = GetWindowLongW(hwnd, GWL_EXSTYLE);

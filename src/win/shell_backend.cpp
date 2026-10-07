@@ -60,9 +60,10 @@ void shell_thread(ShellBackend::Impl* d, std::promise<std::string>* ready) {
         fail("SetWinEventHook failed");
         return;
     }
-    d->report_initial_state();
     ready->set_value(std::string());
     ready = nullptr;
+
+    d->report_initial_state();
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -148,9 +149,11 @@ void ShellBackend::Impl::call(const std::function<void()>& fn) {
 }
 
 bool ShellBackend::Impl::in_scope(HWND hwnd) const {
-    if (config.process_filter.empty()) return true;
+    if (!hwnd) return false;
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == GetCurrentProcessId()) return false;
+    if (config.process_filter.empty()) return true;
     for (uint32_t p : config.process_filter)
         if (p == pid) return true;
     return false;

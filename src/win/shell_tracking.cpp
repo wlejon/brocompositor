@@ -70,7 +70,9 @@ void ShellBackend::Impl::report_initial_state() {
             },
             reinterpret_cast<LPARAM>(&all));
         // Bottom of the z-order first, so the layout order follows stacking age.
-        for (auto it = all.rbegin(); it != all.rend(); ++it) consider(*it);
+        for (auto it = all.rbegin(); it != all.rend(); ++it) {
+            consider(*it);
+        }
     }
     on_win_event(EVENT_SYSTEM_FOREGROUND, GetForegroundWindow(), OBJID_WINDOW, CHILDID_SELF);
 }
@@ -99,7 +101,8 @@ void ShellBackend::Impl::consider(HWND hwnd) {
         std::lock_guard<std::mutex> lock(mutex);
         if (by_hwnd.count(hwnd)) return;
     }
-    if (hwnd == listener || !in_scope(hwnd) || !is_manageable(hwnd)) return;
+    if (hwnd == listener || !in_scope(hwnd)) return;
+    if (!is_manageable(hwnd)) return;
     // Owners first, so a dialog can name its owner.
     HWND owner = GetWindow(hwnd, GW_OWNER);
     if (owner && owner != hwnd) consider(owner);

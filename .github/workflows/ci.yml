@@ -153,6 +153,21 @@ jobs:
           repository: wlejon/brodisplays
           path: brodisplays
 
+      # The direct DRM backend: brodmabuf for KMS and DMA-BUF, broseat (on
+      # brodbus) for the logind session.
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brodmabuf
+          path: brodmabuf
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/broseat
+          path: broseat
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brodbus
+          path: brodbus
+
       - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Load vkms and udmabuf
@@ -218,6 +233,19 @@ jobs:
         with:
           repository: wlejon/brodisplays
           path: brodisplays
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brodmabuf
+          path: brodmabuf
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/broseat
+          path: broseat
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brodbus
+          path: brodbus
 
       - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 

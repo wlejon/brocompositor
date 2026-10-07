@@ -21,11 +21,13 @@ cd /w
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 # Build: wlroots and the protocol tooling, the Vulkan headers for the importer,
-# xcb / xcb-randr / xau (+ gio) for brodisplays in test_wl_brodisplays.
+# xcb / xcb-randr / xau (+ gio) for brodisplays in test_wl_brodisplays, and
+# libsystemd + libseat for broseat (with brodbus), which the DRM backend uses.
 build_packages=(
     ca-certificates git cmake ninja-build pkg-config g++ clang
     libwlroots-0.18-dev wayland-protocols libwayland-dev libxkbcommon-dev libpixman-1-dev
     libdrm-dev libgbm-dev libvulkan-dev libxcb1-dev libxcb-randr0-dev libxau-dev libglib2.0-dev
+    libsystemd-dev libseat-dev
 )
 # Test: the third-party clients and servers the tests drive (each test skips
 # what is missing, so this list is what makes them run rather than skip), and

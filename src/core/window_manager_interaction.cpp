@@ -45,6 +45,16 @@ Margins WindowManager::insets_now(const Win& w) const {
     return insets_for(w, w.snap.maximized || w.sized == WindowState::Maximized);
 }
 
+bool WindowManager::framed_now(const Win& w) const {
+    if (!w.snap.decorated || !config_.decoration.any()) return false;
+    return !(w.snap.fullscreen || w.sized == WindowState::Fullscreen);
+}
+
+bool WindowManager::framed(WindowId id) const {
+    auto it = windows_.find(id);
+    return it != windows_.end() && framed_now(it->second);
+}
+
 Rect WindowManager::client_in(const Win& w, const Rect& outer, bool maximized) const {
     if (outer.empty()) return outer;
     const Margins in = insets_for(w, maximized);

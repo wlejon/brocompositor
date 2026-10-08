@@ -193,6 +193,47 @@ void decorations_fit_the_frame() {
     CHECK_EQ(1080 - (tp->y + tp->height) - 6, gap);
 }
 
+// Zero maximized insets: maximized windows are borderless. The client fills
+// the work area edge to edge, the host still frames it (so it can float
+// controls over it), and a press anywhere on it is the client's: no title
+// band appears out of the interaction policy.
+void borderless_maximized() {
+    WindowManagerConfig cfg;
+    cfg.decoration.insets = Margins{2, 28, 2, 2};
+    WindowManager wm(cfg);
+    wm.handle(MonitorsChanged{{mon(1, kM1, true)}});
+    wm.reserve_edge(kNoMonitor, Edge::Bottom, 40);
+    WindowSnapshot d = win(1, Rect{100, 100, 640, 480});
+    d.decorated = true;
+    echo(wm, wm.handle(WindowAdded{d}));
+    CHECK(wm.framed(1));
+    CHECK(wm.window(1)->framed);
+    CHECK_EQ(wm.decoration_insets(1), (Margins{2, 28, 2, 2}));
+
+    auto m = wm.maximize(1);
+    CHECK_EQ(placed(m, 1), std::optional<Rect>(Rect{0, 0, 1920, 1040}));
+    echo(wm, m);
+    CHECK_EQ(wm.decoration_insets(1), Margins{});
+    CHECK(wm.framed(1));
+    CHECK_EQ(wm.window(1)->outer, (Rect{0, 0, 1920, 1040}));
+    CHECK(wm.classify_press(1, Point{1900, 5}, 0, PressButton::Left).action == PressAction::None);
+    CHECK(wm.classify_press(1, Point{3, 500}, 0, PressButton::Left).action == PressAction::None);
+    // The drag modifiers still move it.
+    CHECK(wm.classify_press(1, Point{900, 500}, modifier::Super, PressButton::Left).action == PressAction::Move);
+
+    // Fullscreen is not framed; an undecorated window never is.
+    echo(wm, wm.fullscreen(1));
+    CHECK(!wm.framed(1));
+    echo(wm, wm.restore(1));
+    wm.handle(WindowAdded{win(2, Rect{300, 300, 400, 300})});
+    CHECK(!wm.framed(2));
+    // No frames declared at all: nothing is framed.
+    WindowManager bare;
+    bare.handle(MonitorsChanged{{mon(1, kM1, true)}});
+    bare.handle(WindowAdded{d});
+    CHECK(!bare.framed(1));
+}
+
 void drag_moves_and_resizes() {
     WindowManager wm;
     wm.handle(MonitorsChanged{{mon(1, kM1, true)}});
@@ -364,6 +405,7 @@ void keyboard_snapping() {
 int main() {
     stacking_follows_focus();
     decorations_fit_the_frame();
+    borderless_maximized();
     drag_moves_and_resizes();
     drag_to_edges_snaps();
     keyboard_snapping();

@@ -106,11 +106,16 @@ struct SnapConfig {
 };
 
 // The frame a host draws around decorated windows (WindowSnapshot::decorated):
-// how far it reaches past the client frame on each side. Zero (the default)
-// means the host draws none, and decorated windows are treated like any other.
+// how far it reaches past the client frame on each side. Zero in both states
+// (the default) means the host draws none, and decorated windows are treated
+// like any other. Zero in one state only makes that state borderless: the
+// host still frames the window (WindowView::framed), with a band of nothing,
+// so the client fills the rect it is given edge to edge and the host can
+// still float controls over it.
 struct DecorationConfig {
     Margins insets;            // normal and snapped windows (title bar: top)
-    Margins maximized_insets;  // maximized windows (usually the title bar only)
+    Margins maximized_insets;  // maximized windows (a title bar, or zero: borderless)
+    bool any() const { return insets != Margins{} || maximized_insets != Margins{}; }
     bool operator==(const DecorationConfig&) const = default;
 };
 
@@ -183,6 +188,9 @@ struct WindowView {
     SnapZone snap = SnapZone::None;  // Left / Right / quarters while snapped (Maximize: maximized)
     Margins decoration;       // the host frame's reach around snapshot.frame (zero: none)
     Rect outer;               // snapshot.frame grown by decoration
+    // The host frames this window right now (decorated, frames declared, not
+    // fullscreen). With a zero decoration it is borderless: framed, no band.
+    bool framed = false;
 };
 
 class WindowManager {
@@ -259,8 +267,12 @@ public:
     // Re-fits maximized, snapped and tiled windows to the new insets.
     std::vector<Command> set_decoration(const DecorationConfig& config);
     // The frame band around this window right now (zero when it is not
-    // decorated, fullscreen, or no insets are configured).
+    // decorated, fullscreen, or no insets are configured, and when its
+    // current state is borderless).
     Margins decoration_insets(WindowId id) const;
+    // Whether the host frames this window right now: decorated, some insets
+    // declared, not fullscreen. True with zero insets for a borderless state.
+    bool framed(WindowId id) const;
 
     // ---- interactive move / resize ----
     // Starts a drag of `id` from layout point `pointer`. A non-immediate drag
@@ -362,6 +374,7 @@ private:
     // decorations / stacking / dragging (window_manager_interaction.cpp)
     Margins insets_for(const Win& w, bool maximized) const;
     Margins insets_now(const Win& w) const;
+    bool framed_now(const Win& w) const;
     Rect client_in(const Win& w, const Rect& outer, bool maximized) const;
     void stack_add(WindowId id);
     void stack_remove(WindowId id);

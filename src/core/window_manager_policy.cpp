@@ -252,7 +252,9 @@ PressDecision WindowManager::classify_press(WindowId id, Point p, uint32_t modif
     if (button != PressButton::Left || !f.contains(p)) return {};
     // The host draws this window's frame: its title bar and edges are the
     // frame's, outside the client, and a press inside belongs to the client.
-    if (insets_now(w) != Margins{}) return {};
+    // A borderless one (framed with no band) is the same: the host's own
+    // controls for it are what move and resize it, never its content.
+    if (framed_now(w)) return {};
     const int32_t lx = p.x - f.x, ly = p.y - f.y;
 
     if (ic.resize_border > 0 && w.snap.resizable && !w.snap.maximized && !w.snap.fullscreen) {

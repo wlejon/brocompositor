@@ -596,6 +596,7 @@ std::optional<WindowView> WindowManager::window(WindowId id) const {
     v.tiled = is_tiled(it->second);
     v.snap = it->second.snap.maximized ? SnapZone::Maximize : it->second.snapped;
     v.decoration = insets_now(it->second);
+    v.framed = framed_now(it->second);
     const Rect& f = it->second.snap.frame;
     v.outer = Rect{f.x - v.decoration.left, f.y - v.decoration.top, f.width + v.decoration.horizontal(),
                    f.height + v.decoration.vertical()};

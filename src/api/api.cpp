@@ -202,6 +202,8 @@ Value windowViewToJs(const brocompositor::WindowView& view, bool focused) {
     deco.set("right", view.decoration.right);
     deco.set("bottom", view.decoration.bottom);
     b.set("decoration", deco.build());
+    b.set("framed", view.framed);
+    b.set("borderless", view.framed && view.decoration == brocompositor::Margins{});
     return b.obj.get();
 }
 

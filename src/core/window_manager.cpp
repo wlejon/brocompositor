@@ -311,6 +311,12 @@ void WindowManager::on_changed(const WindowChanged& e) {
     if (w.floating && w.shown && !moving && !w.snap.minimized && !w.snap.maximized &&
         !w.snap.fullscreen && w.sized == WindowState::Normal && w.snapped == SnapZone::None)
         w.floating_rect = w.snap.frame;
+    // A plain window (not maximized, fullscreen or snapped) owes no restore:
+    // a frame kept from before is stale, and the next maximize or snap
+    // remembers the frame the window has then.
+    if (!moving && !w.snap.maximized && !w.snap.fullscreen && !w.snap.minimized &&
+        w.sized == WindowState::Normal && w.snapped == SnapZone::None)
+        w.restore_rect.reset();
 
     // The host's frame came or went: whatever the core keeps fitted is
     // re-fitted around the new decoration.

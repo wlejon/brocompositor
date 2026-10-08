@@ -168,6 +168,17 @@ void maximize_and_restore_floating() {
     CHECK_EQ(state_of(c6, 1), std::optional<WindowState>(WindowState::Normal));
     CHECK_EQ(placed(c6, 1), std::optional<Rect>(orig));
 
+    echo(wm, c6);
+
+    // Moved since: a restore comes back to where it was moved, not to a
+    // frame remembered before.
+    const Rect moved{300, 150, 1000, 650};
+    auto ms = wm.window(1)->snapshot;
+    ms.frame = moved;
+    echo(wm, wm.handle(WindowChanged{ms, change::Geometry}));
+    echo(wm, wm.maximize(1));
+    CHECK_EQ(placed(wm.restore(1), 1), std::optional<Rect>(moved));
+
     CHECK(wm.maximize(42).empty());
     CHECK(wm.minimize(42).empty());
     CHECK(wm.restore(42).empty());

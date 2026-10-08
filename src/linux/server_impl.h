@@ -49,6 +49,11 @@ struct ToplevelRec {
     WindowId id = kNoWindow;  // minted on map, 0 while unmapped
     Point pos;                // frame origin in layout space
     bool positioned = false;  // pos was chosen (initial placement or PlaceWindow)
+    // Placements that also resize, waiting for the client: each origin takes
+    // effect with the commit that acks its configure, so the window moves in
+    // the same frame it takes the new size (never the old size at the new
+    // place, then the new size). Oldest first.
+    std::vector<std::pair<uint32_t, Point>> pending_pos;
     bool visible = true;
     Size last_geometry;
     WindowSnapshot snap;

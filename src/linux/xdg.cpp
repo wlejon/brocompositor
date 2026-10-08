@@ -155,6 +155,23 @@ void Server::on_new_toplevel(wlr_xdg_toplevel* xdg) {
         if (t->id == kNoWindow) return;
         Size g = geometry_size(x);
         uint32_t changes = 0;
+        // A placement that waited for this configure lands with it.
+        if (!t->pending_pos.empty()) {
+            const uint32_t acked = x->base->current.configure_serial;
+            size_t landed = 0;
+            while (landed < t->pending_pos.size() &&
+                   static_cast<int32_t>(acked - t->pending_pos[landed].first) >= 0)
+                ++landed;
+            if (landed > 0) {
+                const Point to = t->pending_pos[landed - 1].second;
+                t->pending_pos.erase(t->pending_pos.begin(), t->pending_pos.begin() + landed);
+                if (!(to == t->pos)) {
+                    t->pos = to;
+                    changes |= change::Geometry;
+                    mark_tree_dirty(x->base->surface);
+                }
+            }
+        }
         if (!(g == t->last_geometry)) {
             t->last_geometry = g;
             changes |= change::Geometry;
@@ -359,13 +376,23 @@ void Server::on_activation_request(wlr_xdg_activation_v1_request_activate_event*
 
 bool Server::place_xdg(ToplevelRec& tr, const Rect& frame) {
     ToplevelRec* t = &tr;
-    t->pos = Point{frame.x, frame.y};
+    const Point to{frame.x, frame.y};
     t->positioned = true;
     Size g = geometry_size(t->xdg);
-    if (frame.width > 0 && frame.height > 0 && (frame.width != g.width || frame.height != g.height ||
-                                                t->xdg->scheduled.width != frame.width ||
-                                                t->xdg->scheduled.height != frame.height))
-        wlr_xdg_toplevel_set_size(t->xdg, frame.width, frame.height);
+    const bool resize = frame.width > 0 && frame.height > 0 &&
+                        (frame.width != g.width || frame.height != g.height ||
+                         t->xdg->scheduled.width != frame.width || t->xdg->scheduled.height != frame.height);
+    if (resize && t->xdg->base->initialized && t->id != kNoWindow) {
+        // Moved when the client has drawn the new size (the commit acking
+        // this configure), not before.
+        const uint32_t serial = wlr_xdg_toplevel_set_size(t->xdg, frame.width, frame.height);
+        if (!t->pending_pos.empty() && t->pending_pos.back().first == serial) t->pending_pos.back().second = to;
+        else t->pending_pos.emplace_back(serial, to);
+    } else {
+        if (resize) wlr_xdg_toplevel_set_size(t->xdg, frame.width, frame.height);
+        t->pending_pos.clear();
+        t->pos = to;
+    }
     publish_window(*t, change::Geometry);
     update_window_outputs(*t);
     mark_tree_dirty(t->xdg->base->surface);

@@ -122,15 +122,16 @@ size_t dispatchCommands(const std::vector<brocompositor::Command>& cmds) {
         wm = g_custom_wm ? g_custom_wm : g_default_wm;
     }
 
-    size_t refused = 0;
-    if (sink) {
-        refused = sink(cmds);
-    }
-    // Commands a backend refused are not echoed as if they had happened.
-    if (wm && refused == 0) {
-        defaultExecuteCommands(cmds, *wm);
-    }
-    return refused;
+    // With a backend, the window manager learns what happened from the
+    // backend's own events, as each change lands. Echoing the commands as
+    // facts as well would tell it the outcome before the client has acted:
+    // the backend's next report (the window not maximized yet, a frame not
+    // resized yet) would then read as the client undoing it, and the core
+    // would drop what it keeps for the restore. The echo is the stand-in
+    // for a backend, so it runs only without one.
+    if (sink) return sink(cmds);
+    if (wm) defaultExecuteCommands(cmds, *wm);
+    return 0;
 }
 
 Value makeError(const std::string& msg) {

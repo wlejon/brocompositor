@@ -225,6 +225,35 @@ void borderless_maximized() {
     echo(wm, wm.fullscreen(1));
     CHECK(!wm.framed(1));
     echo(wm, wm.restore(1));
+
+    // A window that maps larger than the work area (moved down under its
+    // band), then moved by the shell, maximizes and restores to where it
+    // was moved. The backend reports each step as a client lands it: the
+    // old frame until the client draws the new size.
+    WindowSnapshot big = win(3, Rect{0, 0, 1920, 1040});
+    big.decorated = true;
+    echo(wm, wm.handle(WindowAdded{big}));
+    const Rect moved{200, 120, 1000, 650};
+    auto bs = wm.window(3)->snapshot;
+    auto report = [&](Rect frame, bool maximized) {
+        bs.frame = frame;
+        bs.maximized = maximized;
+        echo(wm, wm.handle(WindowChanged{bs, change::Geometry | change::State}));
+    };
+    const Rect mapped = bs.frame;
+    report(moved, false);         // the shell's own fact (moveWindow)
+    report(mapped, false);        // the backend: not drawn yet
+    report(moved, false);         // drawn
+    auto m3 = wm.maximize(3);
+    CHECK_EQ(placed(m3, 3), std::optional<Rect>(Rect{0, 0, 1920, 1040}));
+    report(moved, false);         // asked, not drawn yet
+    report(Rect{0, 0, 1920, 1040}, true);
+    auto r3 = wm.restore(3);
+    CHECK_EQ(placed(r3, 3), std::optional<Rect>(moved));
+    report(Rect{0, 0, 1920, 1040}, false);  // the client acks the state first
+    report(moved, false);
+    CHECK_EQ(wm.window(3)->snapshot.frame, moved);
+
     wm.handle(WindowAdded{win(2, Rect{300, 300, 400, 300})});
     CHECK(!wm.framed(2));
     // No frames declared at all: nothing is framed.

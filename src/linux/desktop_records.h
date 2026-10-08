@@ -70,7 +70,7 @@ struct XwaylandRec {
     std::unique_ptr<ForeignHandles> foreign;
     Listener destroy, associate, dissociate, map, unmap, commit;
     Listener req_configure, req_move, req_resize, req_minimize, req_maximize, req_fullscreen, req_activate;
-    Listener set_title, set_class, set_parent, set_override_redirect, set_geometry;
+    Listener set_title, set_class, set_parent, set_override_redirect, set_geometry, set_decorations;
 };
 
 // ---------------------------------------------------------------- touch / tablets

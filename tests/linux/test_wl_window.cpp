@@ -46,6 +46,11 @@ void run(Host& host) {
     // xdg-decoration: no preference from the client -> server-side (host draws).
     CHECK(a->wait_line("decoration server", 5000));
     CHECK(host.server().server_side_decoration(wa));
+    // ...and the window's snapshot says the host draws its frame.
+    CHECK(host.wait([&] {
+        auto s = host.server().query(wa);
+        return s && s->decorated;
+    }));
     SurfaceId root = SurfaceId(snap->native);
     CHECK(host.wait([&] { return host.surface_pixel(root, 100, 75) == 0xFFFF0000u; }));
     auto src = host.server().surface(root);
@@ -205,6 +210,7 @@ void run(Host& host) {
     CHECK(st.src_x == 50 && st.src_y == 25 && st.src_width == 100 && st.src_height == 50);
     CHECK(v->wait_line("decoration client", 5000));
     CHECK(!host.server().server_side_decoration(host.window_by_app_id("bc-v")));
+    CHECK(!host.server().query(host.window_by_app_id("bc-v"))->decorated);
     auto vt = host.server().window_surfaces(host.window_by_app_id("bc-v"));
     CHECK(vt.size() == 1 && vt[0].size == (Size{100, 50}));
     v->kill_now();

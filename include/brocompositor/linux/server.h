@@ -234,8 +234,10 @@ public:
     std::optional<WindowSnapshot> query(WindowId id) const;
     std::vector<WindowId> windows() const;
     bool visible(WindowId id) const;
-    // xdg-decoration negotiated server-side: the host draws the title bar /
-    // border around the frame (WindowChanged with change::State on change).
+    // xdg-decoration negotiated server-side (or an X11 window without
+    // _MOTIF_WM_HINTS turning the frame off): the host draws the title bar /
+    // border around the frame. The same as WindowSnapshot::decorated
+    // (WindowChanged with change::State on change).
     bool server_side_decoration(WindowId id) const;
     bool set_window_state(WindowId id, bool maximized, bool fullscreen);
     // Tells the client (and taskbars) that the window is minimized; hiding it

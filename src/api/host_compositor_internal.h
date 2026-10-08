@@ -41,6 +41,7 @@ void installWindowsOnto(Value compObj);
 void installWorkspacesOnto(Value compObj);
 void installEventsOnto(Value compObj);
 void installPolicyOnto(Value compObj);
+void installInteractionOnto(Value compObj);
 
 // Event handling
 void drainCompositorEvents();
@@ -49,5 +50,8 @@ void dispatchListenerEvent(const std::string& type, Value eventPayload);
 // reservationChanged for every shell reservation (after a monitor change).
 void dispatchShellReservations();
 Value reservationToJs(const brocompositor::EdgeReservation& r);
+// stackingChanged / snapPreview, when they changed since the last call.
+void dispatchInteractionChanges();
+bool hostFeedsEvents();
 
 } // namespace brocompositor::api

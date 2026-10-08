@@ -76,6 +76,9 @@ WindowSnapshot xsnapshot(Server* s, XwaylandRec& x) {
     w.minimized = x.minimized;
     w.maximized = xmaximized(xs);
     w.fullscreen = xs->fullscreen;
+    // X11 windows get the host's frame unless they opted out of it through
+    // _MOTIF_WM_HINTS (GTK client-side decorations, borderless games).
+    w.decorated = xs->decorations == WLR_XWAYLAND_SURFACE_DECORATIONS_ALL;
     if (const xcb_size_hints_t* h = xs->size_hints) {
         bool fixed = (h->flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) && (h->flags & XCB_ICCCM_SIZE_HINT_P_MAX_SIZE) &&
                      h->min_width > 0 && h->min_width == h->max_width && h->min_height == h->max_height;
@@ -223,9 +226,7 @@ void map_managed(Server* s, XwaylandRec* x) {
         m.snap = x->snap;
         m.visible = true;
         m.root = x->snap.native;
-        // X11 windows draw no frame unless they opted out of server-side
-        // decorations via _MOTIF_WM_HINTS (GTK CSD, borderless games).
-        m.ssd = xs->decorations == WLR_XWAYLAND_SURFACE_DECORATIONS_ALL;
+        m.ssd = x->snap.decorated;
         s->mirror.windows[x->id] = m;
     }
     s->events.push(WindowAdded{x->snap});
@@ -401,6 +402,16 @@ void on_new_xsurface(Server* s, wlr_xwayland_surface* xs) {
     x->set_title.connect(&xs->events.set_title, [s, x](void*) { s->publish_xwindow(*x, change::Title); });
     x->set_class.connect(&xs->events.set_class, [s, x](void*) { s->publish_xwindow(*x, change::Title); });
     x->set_parent.connect(&xs->events.set_parent, [s, x](void*) { s->publish_xwindow(*x, 0); });
+    x->set_decorations.connect(&xs->events.set_decorations, [s, x](void*) {
+        if (x->id == kNoWindow) return;
+        {
+            std::lock_guard<std::mutex> lock(s->mirror.m);
+            auto it = s->mirror.windows.find(x->id);
+            if (it != s->mirror.windows.end())
+                it->second.ssd = x->xs->decorations == WLR_XWAYLAND_SURFACE_DECORATIONS_ALL;
+        }
+        s->publish_xwindow(*x, change::State);
+    });
 }
 
 }  // namespace

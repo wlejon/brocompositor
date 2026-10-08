@@ -63,6 +63,8 @@ void scripted(Host& host) {
     CHECK_EQ(s->process_id, uint32_t(x->pid()));
     CHECK_EQ(s->frame.width, 300);
     CHECK_EQ(s->frame.height, 200);
+    CHECK(s->decorated);  // no _MOTIF_WM_HINTS: the host draws its frame
+    CHECK(host.server().server_side_decoration(w));
     CHECK(host.wait([&] {
         for (auto& st : host.server_events_of<XwaylandStatus>())
             if (st.running) return true;
@@ -108,6 +110,14 @@ void scripted(Host& host) {
     WindowId dd = wait_window(host, [](const WindowSnapshot& s) { return s.title == "main dialog"; });
     REQUIRE(dm != kNoWindow && dd != kNoWindow);
     CHECK_EQ(host.server().query(dd)->owner, dm);
+
+    // A window that turns the window-manager frame off draws its own.
+    auto nd = Child::spawn({BC_X11_CLIENT, "--class", "BcBare", "--undecorated"}, host.client_env());
+    REQUIRE(nd);
+    WindowId wn = wait_window(host, [](const WindowSnapshot& s) { return s.app_id == "BcBare"; });
+    REQUIRE(wn != kNoWindow);
+    CHECK(host.wait([&] { return !host.server().query(wn)->decorated; }));
+    CHECK(!host.server().server_side_decoration(wn));
     CHECK(host.wait([&] { return !host.server().unmanaged_surfaces().empty(); }));
     auto um = host.server().unmanaged_surfaces();
     REQUIRE(!um.empty());

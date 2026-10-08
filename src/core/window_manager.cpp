@@ -50,7 +50,7 @@ std::vector<Command> WindowManager::handle(const Event& event) {
 
 bool WindowManager::is_tiled(const Win& w) const {
     if (w.floating || w.snap.minimized || w.snap.maximized || w.snap.fullscreen) return false;
-    if (w.sized != WindowState::Normal) return false;
+    if (w.sized != WindowState::Normal || w.snapped != SnapZone::None) return false;
     auto it = workspaces_.find(w.ws);
     return it != workspaces_.end() && it->second.layout != LayoutMode::Floating;
 }
@@ -126,9 +126,11 @@ void WindowManager::do_relayout(WorkspaceId id) {
     for (const Placement& p : r.placements) {
         if (moving_.count(p.id)) continue;
         Win& w = windows_.at(p.id);
-        if (w.placed == p.rect && w.snap.frame == p.rect) continue;
-        w.placed = p.rect;
-        emit(PlaceWindow{p.id, p.rect});
+        // The slot holds the whole frame, the host's decoration included.
+        const Rect client = client_in(w, p.rect, false);
+        if (w.placed == client && w.snap.frame == client) continue;
+        w.placed = client;
+        emit(PlaceWindow{p.id, client});
     }
 }
 
@@ -235,9 +237,31 @@ void WindowManager::on_added(const WindowSnapshot& s) {
         if (active_.count(mid)) target = active_[mid];
     }
     auto [it, ok] = windows_.emplace(s.id, std::move(w));
+    stack_add(s.id);
     if (target != kNoWorkspace) {
         attach(s.id, it->second, target);
+        // A decorated window placed with its client at the top of the work
+        // area would have its title bar under the shell's panel (or off
+        // screen): move it down by the frame's top band.
+        Win& nw = it->second;
+        const Margins in = insets_now(nw);
+        if (in.top > 0 && !is_tiled(nw) && !nw.snap.maximized && !nw.snap.fullscreen) {
+            if (const MonitorSnapshot* m = window_monitor(nw)) {
+                const Rect& wa = m->work_area;
+                if (!wa.empty() && nw.snap.frame.y - in.top < wa.y) {
+                    Rect f = nw.snap.frame;
+                    f.y = wa.y + in.top;
+                    nw.floating_rect = f;
+                    nw.placed = f;
+                    emit(PlaceWindow{s.id, f});
+                }
+            }
+        }
         do_relayout(target);
+    }
+    if (config_.focus_on_map) {
+        stack_raise(s.id);
+        emit(FocusWindow{s.id});
     }
 }
 
@@ -248,6 +272,8 @@ void WindowManager::on_removed(WindowId id) {
     detach(id, it->second);
     windows_.erase(it);
     moving_.erase(id);
+    stack_remove(id);
+    if (drag_ && drag_->info.window == id) drag_.reset();
     bool was_focused = focused_ == id;
     if (was_focused) focused_ = kNoWindow;
     auto ws = workspaces_.find(ws_id);
@@ -273,16 +299,26 @@ void WindowManager::on_changed(const WindowChanged& e) {
                  old.fullscreen != w.snap.fullscreen;
     if (state && !w.snap.minimized && !w.snap.maximized) w.placed.reset();
     // Left maximized / fullscreen by itself (the client, the user, a drag):
-    // the core no longer keeps it fitted or owes it a restore.
-    if ((old.maximized || old.fullscreen) && !w.snap.maximized && !w.snap.fullscreen) {
+    // the core no longer keeps it fitted or owes it a restore. (Snapping a
+    // maximized window leaves the state too, but keeps its restore frame.)
+    if ((old.maximized || old.fullscreen) && !w.snap.maximized && !w.snap.fullscreen &&
+        w.snapped == SnapZone::None) {
         w.sized = WindowState::Normal;
         w.restore_rect.reset();
     }
     bool moving = moving_.count(w.snap.id) != 0;
 
     if (w.floating && w.shown && !moving && !w.snap.minimized && !w.snap.maximized &&
-        !w.snap.fullscreen && w.sized == WindowState::Normal)
+        !w.snap.fullscreen && w.sized == WindowState::Normal && w.snapped == SnapZone::None)
         w.floating_rect = w.snap.frame;
+
+    // The host's frame came or went: whatever the core keeps fitted is
+    // re-fitted around the new decoration.
+    if (old.decorated != w.snap.decorated) {
+        w.placed.reset();
+        refit_sized();
+        state = true;
+    }
 
     // Moved to another monitor without a drag (keyboard snap, app-initiated):
     // follow it to that monitor's active workspace.
@@ -306,6 +342,7 @@ void WindowManager::on_focus(WindowId id) {
         return;
     }
     focused_ = id;
+    if (config_.raise_on_focus) stack_raise(id);
     auto ws = workspaces_.find(it->second.ws);
     if (ws == workspaces_.end()) return;
     touch_focus(ws->second, id);
@@ -462,6 +499,9 @@ std::vector<Command> WindowManager::focus(WindowId id) {
     if (it == windows_.end()) return {};
     auto ws = workspaces_.find(it->second.ws);
     if (ws != workspaces_.end() && !is_active(ws->second)) do_activate(ws->first, false);
+    // Raised now rather than when the backend reports the focus, so the host
+    // draws it on top in the same frame.
+    if (config_.raise_on_focus) stack_raise(id);
     emit(FocusWindow{id});
     return take();
 }
@@ -554,6 +594,11 @@ std::optional<WindowView> WindowManager::window(WindowId id) const {
     v.floating = it->second.floating;
     v.shown = it->second.shown;
     v.tiled = is_tiled(it->second);
+    v.snap = it->second.snap.maximized ? SnapZone::Maximize : it->second.snapped;
+    v.decoration = insets_now(it->second);
+    const Rect& f = it->second.snap.frame;
+    v.outer = Rect{f.x - v.decoration.left, f.y - v.decoration.top, f.width + v.decoration.horizontal(),
+                   f.height + v.decoration.vertical()};
     return v;
 }
 

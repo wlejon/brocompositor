@@ -13,6 +13,7 @@
 // Options: --class C --instance I --title T --size WxH --pos X,Y --color RRGGBB
 //          --transient (a second window, transient for the first, class C,
 //          title "<T> dialog") --override X,Y,WxH (an override-redirect window)
+//          --undecorated (_MOTIF_WM_HINTS: no window-manager frame)
 // stdin:   fullscreen | unfullscreen | maximize | activate | quit
 #include <xcb/xcb.h>
 
@@ -141,6 +142,7 @@ int main(int argc, char** argv) {
     int w = 200, h = 150, x = 0, y = 0;
     uint32_t color = 0xC03080;
     bool transient = false;
+    bool undecorated = false;
     int ox = -1, oy = -1, ow = 0, oh = 0;
     for (int i = 1; i < argc; ++i) {
         std::string k = argv[i];
@@ -152,6 +154,7 @@ int main(int argc, char** argv) {
         else if (k == "--pos") std::sscanf(next().c_str(), "%d,%d", &x, &y);
         else if (k == "--color") color = uint32_t(std::strtoul(next().c_str(), nullptr, 16));
         else if (k == "--transient") transient = true;
+        else if (k == "--undecorated") undecorated = true;
         else if (k == "--override") std::sscanf(next().c_str(), "%d,%d,%dx%d", &ox, &oy, &ow, &oh);
     }
     conn = xcb_connect(nullptr, nullptr);
@@ -175,6 +178,12 @@ int main(int argc, char** argv) {
 
     xcb_window_t main_win = make_window(x, y, w, h, color, false);
     decorate(main_win, instance, cls, title);
+    if (undecorated) {
+        // flags = MWM_HINTS_DECORATIONS, decorations = 0 (what GTK CSD sets).
+        const uint32_t hints[5] = {2, 0, 0, 0, 0};
+        xcb_atom_t motif = atom("_MOTIF_WM_HINTS");
+        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, main_win, motif, motif, 32, 5, hints);
+    }
     xcb_map_window(conn, main_win);
     std::vector<xcb_window_t> extra;
     if (transient) {

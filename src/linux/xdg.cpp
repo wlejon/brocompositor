@@ -69,6 +69,7 @@ WindowSnapshot Server::snapshot(ToplevelRec& t) {
     s.maximized = t.xdg->current.maximized;
     s.fullscreen = t.xdg->current.fullscreen;
     s.minimized = false;
+    s.decorated = t.ssd;
     const auto& c = t.xdg->current;
     s.resizable = !(c.min_width > 0 && c.min_width == c.max_width && c.min_height > 0 && c.min_height == c.max_height);
     return s;
@@ -345,7 +346,7 @@ void Server::apply_decoration(ToplevelRec& t) {
         auto it = mirror.windows.find(t.id);
         if (it != mirror.windows.end()) it->second.ssd = ssd;
     }
-    events.push(WindowChanged{t.snap, change::State});
+    publish_window(t, change::State);
 }
 
 void Server::on_activation_request(wlr_xdg_activation_v1_request_activate_event* e) {

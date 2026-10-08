@@ -17,6 +17,9 @@ inline std::ostream& operator<<(std::ostream& os, const Point& p) {
 }
 inline std::ostream& operator<<(std::ostream& os, const Size& s) { return os << s.width << "x" << s.height; }
 inline std::ostream& operator<<(std::ostream& os, WindowState s) { return os << to_string(s); }
+inline std::ostream& operator<<(std::ostream& os, const Margins& m) {
+    return os << "[l" << m.left << " t" << m.top << " r" << m.right << " b" << m.bottom << "]";
+}
 
 }  // namespace brocompositor
 

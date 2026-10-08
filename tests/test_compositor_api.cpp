@@ -188,6 +188,66 @@ int main() {
 
     }
 
+    // 5b. Stacking, decorations, interactive drag with a snap preview, snapping.
+    std::cout << "Testing stacking, decorations, drag and snapping..." << std::endl;
+    {
+        auto r = evalScript(
+            "(function() {\n"
+            "  const c = bro.compositor;\n"
+            "  const st = c.getStacking();\n"
+            "  if (!Array.isArray(st) || st.length !== 2) return 'stacking ' + JSON.stringify(st);\n"
+            "  c.focusWindow(1);\n"
+            "  if (c.getStacking()[1] !== 1) return 'focus did not raise';\n"
+            "  if (c.raiseWindow(2) !== true || c.getStacking()[1] !== 2) return 'raiseWindow';\n"
+            "  if (c.raiseWindow(2) !== false) return 'raising the top window is a no-op';\n"
+            "  const d = c.setDecorations({ insets: { top: 30, left: 4, right: 4, bottom: 4 }, maximizedInsets: { top: 30 } });\n"
+            "  if (d.insets.top !== 30 || d.insets.left !== 4 || d.maximizedInsets.left !== 0) return 'decorations';\n"
+            "  const w1 = c.getWindow(1);\n"
+            "  if (w1.decorated !== false || w1.decoration.top !== 0 || w1.snap !== 'none') return 'window frame fields';\n"
+            "  if (w1.outerFrame.x !== w1.frame.x) return 'outerFrame of an undecorated window';\n"
+            "  if (c.beginMove(1) !== false) return 'no pointer, no drag';\n"
+            "  if (c.beginMove(1, { x: 100, y: 80, immediate: true }) !== true) return 'beginMove';\n"
+            "  globalThis.__snaps = [];\n"
+            "  c.on('snapPreview', (e) => __snaps.push(e.zone + (e.rect ? ':' + e.rect.x + ',' + e.rect.width : '')));\n"
+            "  c.dragTo(2, 500);\n"
+            "  const g = c.getDrag();\n"
+            "  if (!g || g.action !== 'move' || g.snap !== 'left' || !g.snapRect) return 'drag ' + JSON.stringify(g);\n"
+            "  return 'ok';\n"
+            "})();\n"
+        );
+        CHECK(!r.thrown);
+        CHECK(ev::isString(r.value) && ev::toUtf8(r.value) == "ok");
+        if (ev::isString(r.value) && ev::toUtf8(r.value) != "ok") std::cerr << ev::toUtf8(r.value) << std::endl;
+        brocompositor::api::tickCompositorAsync();
+        auto r2 = evalScript(
+            "(function() {\n"
+            "  const c = bro.compositor;\n"
+            "  if (__snaps.length !== 1 || !__snaps[0].startsWith('left:0,')) return 'preview ' + JSON.stringify(__snaps);\n"
+            "  if (c.endDrag() !== true || c.getDrag() !== null) return 'endDrag';\n"
+            "  const w = c.getWindow(1);\n"
+            "  if (w.snap !== 'left' || w.frame.x !== 0) return 'snapped ' + JSON.stringify(w.frame);\n"
+            "  if (c.snapWindow(1, 'none') !== true || c.getWindow(1).snap !== 'none') return 'unsnap';\n"
+            "  if (c.snapWindow(1, 'sideways') !== false) return 'bad zone';\n"
+            "  if (c.snapWindowToward(1, 'up') !== true || !c.getWindow(1).maximized) return 'toward up';\n"
+            "  if (c.snapWindowToward(1, 'down') !== true || c.getWindow(1).maximized) return 'toward down';\n"
+            "  const res = c.beginResize(1, 'bottom right', { x: 10, y: 10 });\n"
+            "  if (res !== true || c.getDrag().edges !== 'bottom right') return 'beginResize';\n"
+            "  c.cancelDrag();\n"
+            "  const ia = c.setInteraction({ minSize: { width: 120, height: 90 }, dragThreshold: 3 });\n"
+            "  if (ia.minSize.width !== 120 || ia.dragThreshold !== 3) return 'interaction';\n"
+            "  const sn = c.setSnapping({ cornerSize: 64, edgeThreshold: 10 });\n"
+            "  if (sn.cornerSize !== 64 || sn.edgeThreshold !== 10 || sn.enabled !== true) return 'snapping';\n"
+            "  c.setDecorations({ insets: 0, maximizedInsets: 0 });\n"
+            "  return 'ok';\n"
+            "})();\n"
+        );
+        CHECK(!r2.thrown);
+        CHECK(ev::isString(r2.value) && ev::toUtf8(r2.value) == "ok");
+        if (ev::isString(r2.value) && ev::toUtf8(r2.value) != "ok") std::cerr << ev::toUtf8(r2.value) << std::endl;
+        brocompositor::api::tickCompositorAsync();
+        std::cout << "  Stacking, decorations, drag and snapping passed." << std::endl;
+    }
+
     // 6. Test Workspaces
     std::cout << "Testing workspaces..." << std::endl;
     {

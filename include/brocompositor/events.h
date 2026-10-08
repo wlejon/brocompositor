@@ -56,6 +56,10 @@ struct WindowSnapshot {
     bool maximized = false;
     bool fullscreen = false;     // covers its whole monitor without decoration
     bool resizable = true;
+    // The host draws this window's frame (title bar, borders): xdg-decoration
+    // negotiated server-side, or an X11 window that leaves its frame to the
+    // window manager. Always false for the shell backends (the OS draws).
+    bool decorated = false;
 
     bool operator==(const WindowSnapshot&) const = default;
 };
@@ -64,7 +68,7 @@ struct WindowSnapshot {
 namespace change {
 inline constexpr uint32_t Geometry = 1u << 0;
 inline constexpr uint32_t Title = 1u << 1;
-inline constexpr uint32_t State = 1u << 2;  // minimized / maximized / fullscreen
+inline constexpr uint32_t State = 1u << 2;  // minimized / maximized / fullscreen / decorated
 inline constexpr uint32_t Monitor = 1u << 3;
 }  // namespace change
 

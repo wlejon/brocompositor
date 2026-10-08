@@ -55,9 +55,9 @@ void drainCompositorEvents() {
     if (!q || !wm) return;
 
     auto events = q->drain();
+    const bool fed = hostFeedsEvents();
     for (const auto& evItem : events) {
-        auto cmds = wm->handle(evItem);
-        dispatchCommands(cmds);
+        if (!fed) dispatchCommands(wm->handle(evItem));
 
         std::visit([&](const auto& e) {
             using T = std::decay_t<decltype(e)>;
@@ -66,7 +66,9 @@ void drainCompositorEvents() {
                 obj.set("type", "windowCreated");
                 obj.set("id", static_cast<double>(e.window.id));
                 obj.set("windowId", static_cast<double>(e.window.id));
-                ev::Persistent winP(windowSnapshotToJs(e.window, e.window.id == wm->focused()));
+                auto view = wm->window(e.window.id);
+                ev::Persistent winP(view ? windowViewToJs(*view, e.window.id == wm->focused())
+                                         : windowSnapshotToJs(e.window, e.window.id == wm->focused()));
                 obj.set("window", winP.get());
                 dispatchListenerEvent("windowCreated", obj.build());
                 dispatchListenerEvent("windowAdded", obj.build());
@@ -83,7 +85,9 @@ void drainCompositorEvents() {
                 obj.set("id", static_cast<double>(e.window.id));
                 obj.set("windowId", static_cast<double>(e.window.id));
                 obj.set("changes", static_cast<double>(e.changes));
-                ev::Persistent winP(windowSnapshotToJs(e.window, e.window.id == wm->focused()));
+                auto view = wm->window(e.window.id);
+                ev::Persistent winP(view ? windowViewToJs(*view, e.window.id == wm->focused())
+                                         : windowSnapshotToJs(e.window, e.window.id == wm->focused()));
                 obj.set("window", winP.get());
                 dispatchListenerEvent("windowChanged", obj.build());
             } else if constexpr (std::is_same_v<T, FocusChanged>) {

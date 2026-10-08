@@ -82,6 +82,11 @@ Value interactionToJs(const InteractionConfig& c) {
     b.set("resizeBorder", c.resize_border);
     ev::Persistent mods(modifiersToJs(c.drag_modifiers));
     b.set("dragModifiers", mods.get());
+    ObjectBuilder min;
+    min.set("width", c.min_size.width);
+    min.set("height", c.min_size.height);
+    b.set("minSize", min.build());
+    b.set("dragThreshold", c.drag_threshold);
     return b.build();
 }
 
@@ -237,6 +242,15 @@ void installPolicyOnto(Value compObj) {
                 ev::Persistent m(ArgReader::getProp(o.get(), "dragModifiers"));
                 c.drag_modifiers = parseModifiers(m.get());
             }
+            if (ArgReader::hasProp(o.get(), "minSize")) {
+                ev::Persistent m(ArgReader::getProp(o.get(), "minSize"));
+                if (ev::isObject(m.get())) {
+                    c.min_size.width = std::max(1, ArgReader::getPropInt(m.get(), "width", c.min_size.width));
+                    c.min_size.height = std::max(1, ArgReader::getPropInt(m.get(), "height", c.min_size.height));
+                }
+            }
+            if (ArgReader::hasProp(o.get(), "dragThreshold"))
+                c.drag_threshold = std::max(0, ArgReader::getPropInt(o.get(), "dragThreshold"));
         }
         wm->set_interaction(c);
         return interactionToJs(c);

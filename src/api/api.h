@@ -40,6 +40,18 @@ std::shared_ptr<brocompositor::EventQueue> getEventQueue();
 using CommandSink = std::function<size_t(const std::vector<brocompositor::Command>&)>;
 void setCommandSink(CommandSink sink);
 
+/// The host already hands every event it pushes into the API's EventQueue to
+/// its WindowManager (and executes the commands that answer it), so the API
+/// only reports the events to script and must not feed them a second time.
+/// Off by default: the API feeds the window manager itself.
+void setHostFeedsEvents(bool on);
+
+/// Where the pointer is, in layout coordinates, for a beginMove / beginResize
+/// called without {x, y} (a shell's title-bar handler). Returns false when
+/// the host cannot say.
+using PointerSource = std::function<bool(int32_t& x, int32_t& y)>;
+void setPointerSource(PointerSource source);
+
 } // namespace brocompositor::api
 
 using brocompositor::api::installCompositor;
@@ -50,3 +62,5 @@ using brocompositor::api::getWindowManager;
 using brocompositor::api::setEventQueue;
 using brocompositor::api::getEventQueue;
 using brocompositor::api::setCommandSink;
+using brocompositor::api::setHostFeedsEvents;
+using brocompositor::api::setPointerSource;

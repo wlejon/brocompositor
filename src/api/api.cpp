@@ -17,6 +17,7 @@ std::shared_ptr<brocompositor::EventQueue> g_custom_queue;
 std::shared_ptr<brocompositor::EventQueue> g_default_queue;
 
 CommandSink g_custom_command_sink;
+bool g_host_feeds_events = false;
 
 void defaultExecuteCommands(const std::vector<brocompositor::Command>& cmds,
                             brocompositor::WindowManager& wm) {
@@ -100,6 +101,16 @@ void setCommandSink(CommandSink sink) {
     g_custom_command_sink = std::move(sink);
 }
 
+void setHostFeedsEvents(bool on) {
+    std::lock_guard lock(g_state_mu);
+    g_host_feeds_events = on;
+}
+
+bool hostFeedsEvents() {
+    std::lock_guard lock(g_state_mu);
+    return g_host_feeds_events;
+}
+
 size_t dispatchCommands(const std::vector<brocompositor::Command>& cmds) {
     if (cmds.empty()) return 0;
 
@@ -169,6 +180,7 @@ Value windowSnapshotToJs(const brocompositor::WindowSnapshot& snap, bool focused
     b.set("maximized", snap.maximized);
     b.set("fullscreen", snap.fullscreen);
     b.set("resizable", snap.resizable);
+    b.set("decorated", snap.decorated);
     b.set("floating", floating);
     b.set("tiled", tiled);
     b.set("shown", shown);
@@ -178,8 +190,19 @@ Value windowSnapshotToJs(const brocompositor::WindowSnapshot& snap, bool focused
 }
 
 Value windowViewToJs(const brocompositor::WindowView& view, bool focused) {
-    return windowSnapshotToJs(view.snapshot, focused, view.workspace,
-                              view.floating, view.tiled, view.shown);
+    ev::Persistent obj(windowSnapshotToJs(view.snapshot, focused, view.workspace,
+                                          view.floating, view.tiled, view.shown));
+    ObjectBuilder b(obj.get());
+    b.set("snap", to_string(view.snap));
+    ev::Persistent outer(rectToJs(view.outer));
+    b.set("outerFrame", outer.get());
+    ObjectBuilder deco;
+    deco.set("top", view.decoration.top);
+    deco.set("left", view.decoration.left);
+    deco.set("right", view.decoration.right);
+    deco.set("bottom", view.decoration.bottom);
+    b.set("decoration", deco.build());
+    return b.obj.get();
 }
 
 Value workspaceViewToJs(const brocompositor::WorkspaceView& ws) {
@@ -264,10 +287,12 @@ void installCompositor() {
     installWorkspacesOnto(compObj.get());
     installEventsOnto(compObj.get());
     installPolicyOnto(compObj.get());
+    installInteractionOnto(compObj.get());
 }
 
 void tickCompositorAsync() {
     drainCompositorEvents();
+    dispatchInteractionChanges();
     if (ev::microtasksPending()) {
         ev::drainMicrotasks();
     }

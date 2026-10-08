@@ -77,12 +77,19 @@ void WindowManager::apply_reservations() {
 
 void WindowManager::refit_sized() {
     for (auto& [id, w] : windows_) {
-        if (w.sized == WindowState::Normal || w.snap.minimized) continue;
+        if (w.snap.minimized) continue;
+        if (w.sized == WindowState::Normal) {
+            if (w.snapped != SnapZone::None) {
+                auto ws = workspaces_.find(w.ws);
+                if (ws != workspaces_.end() && is_active(ws->second)) place_snapped(id, w);
+            }
+            continue;
+        }
         auto ws = workspaces_.find(w.ws);
         if (ws == workspaces_.end() || !is_active(ws->second)) continue;
         const MonitorSnapshot* m = window_monitor(w);
         if (!m) continue;
-        Rect target = w.sized == WindowState::Maximized ? m->work_area : m->bounds;
+        Rect target = w.sized == WindowState::Maximized ? client_in(w, m->work_area, true) : m->bounds;
         if (target.empty() || w.placed == target) continue;
         w.placed = target;
         emit(PlaceWindow{id, target});
@@ -100,7 +107,7 @@ std::vector<Command> WindowManager::enter_sized_state(WindowId id, WindowState s
     if (already && !w.snap.minimized) return {};
     const MonitorSnapshot* m = window_monitor(w);
     if (!m) return {};
-    Rect target = max ? m->work_area : m->bounds;
+    Rect target = max ? client_in(w, m->work_area, true) : m->bounds;
     if (target.empty()) return {};
 
     const bool was_minimized = w.snap.minimized;
@@ -111,6 +118,7 @@ std::vector<Command> WindowManager::enter_sized_state(WindowId id, WindowState s
     if (!w.restore_rect && !w.snap.maximized && !w.snap.fullscreen && !w.snap.frame.empty())
         w.restore_rect = w.snap.frame;
     w.sized = state;
+    w.snapped = SnapZone::None;
     emit(SetWindowState{id, state});
     w.placed = target;
     emit(PlaceWindow{id, target});
@@ -151,12 +159,28 @@ std::vector<Command> WindowManager::restore(WindowId id) {
         emit(FocusWindow{id});
         return take();
     }
-    if (!w.snap.maximized && !w.snap.fullscreen && w.sized == WindowState::Normal) return {};
+    if (!w.snap.maximized && !w.snap.fullscreen && w.sized == WindowState::Normal) {
+        if (w.snapped == SnapZone::None) return {};
+        // Snapped: back to the frame it had before (the state never changed).
+        w.snapped = SnapZone::None;
+        std::optional<Rect> back = w.restore_rect;
+        w.restore_rect.reset();
+        w.placed.reset();
+        const bool tiles = !w.floating && ws != workspaces_.end() && ws->second.layout != LayoutMode::Floating;
+        if (tiles) {
+            do_relayout(w.ws);
+        } else if (back && !back->empty()) {
+            emit(PlaceWindow{id, *back});
+            if (w.floating) w.floating_rect = *back;
+        }
+        return take();
+    }
 
     emit(SetWindowState{id, WindowState::Normal});
     std::optional<Rect> back = w.restore_rect;
     if (!back && !w.floating_rect.empty()) back = w.floating_rect;
     w.sized = WindowState::Normal;
+    w.snapped = SnapZone::None;
     w.restore_rect.reset();
     w.placed.reset();
     const bool tiles = !w.floating && ws != workspaces_.end() && ws->second.layout != LayoutMode::Floating;
@@ -226,6 +250,9 @@ PressDecision WindowManager::classify_press(WindowId id, Point p, uint32_t modif
     }
     const Rect& f = w.snap.frame;
     if (button != PressButton::Left || !f.contains(p)) return {};
+    // The host draws this window's frame: its title bar and edges are the
+    // frame's, outside the client, and a press inside belongs to the client.
+    if (insets_now(w) != Margins{}) return {};
     const int32_t lx = p.x - f.x, ly = p.y - f.y;
 
     if (ic.resize_border > 0 && w.snap.resizable && !w.snap.maximized && !w.snap.fullscreen) {

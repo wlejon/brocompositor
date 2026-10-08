@@ -95,13 +95,16 @@ void drainCompositorEvents() {
             } else if constexpr (std::is_same_v<T, MonitorsChanged>) {
                 ObjectBuilder obj;
                 obj.set("type", "monitorsChanged");
-                ev::Persistent arr(ev::makeArray(static_cast<uint32_t>(e.monitors.size())));
-                for (uint32_t i = 0; i < e.monitors.size(); ++i) {
-                    ev::Persistent m(monitorSnapshotToJs(e.monitors[i]));
+                // The manager's view: work areas exclude shell reservations.
+                const auto& mons = wm->monitors();
+                ev::Persistent arr(ev::makeArray(static_cast<uint32_t>(mons.size())));
+                for (uint32_t i = 0; i < mons.size(); ++i) {
+                    ev::Persistent m(monitorSnapshotToJs(mons[i]));
                     ev::setElement(arr.get(), i, m.get());
                 }
                 obj.set("monitors", arr.get());
                 dispatchListenerEvent("monitorsChanged", obj.build());
+                dispatchShellReservations();
             } else if constexpr (std::is_same_v<T, MoveSizeStarted>) {
                 ObjectBuilder obj;
                 obj.set("type", "moveSizeStarted");
@@ -119,6 +122,7 @@ void drainCompositorEvents() {
                 obj.set("monitor", static_cast<double>(e.monitor));
                 ev::Persistent rP(rectToJs(e.rect));
                 obj.set("rect", rP.get());
+                obj.set("shell", false);
                 dispatchListenerEvent("reservationChanged", obj.build());
             }
         }, evItem);

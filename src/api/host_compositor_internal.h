@@ -19,7 +19,10 @@ using Value = bronze::Value;
 // Service accessors and command dispatching
 std::shared_ptr<brocompositor::WindowManager> activeWindowManager();
 std::shared_ptr<brocompositor::EventQueue> activeEventQueue();
-void dispatchCommands(const std::vector<brocompositor::Command>& cmds);
+// Sends commands to the command sink (when the host set one) and echoes them
+// into the window manager as facts (the stand-in when there is no backend).
+// Returns how many the sink refused.
+size_t dispatchCommands(const std::vector<brocompositor::Command>& cmds);
 
 // Error helper
 Value makeError(const std::string& msg);
@@ -37,10 +40,14 @@ Value monitorSnapshotToJs(const brocompositor::MonitorSnapshot& mon);
 void installWindowsOnto(Value compObj);
 void installWorkspacesOnto(Value compObj);
 void installEventsOnto(Value compObj);
+void installPolicyOnto(Value compObj);
 
 // Event handling
 void drainCompositorEvents();
 void clearCompositorListeners();
 void dispatchListenerEvent(const std::string& type, Value eventPayload);
+// reservationChanged for every shell reservation (after a monitor change).
+void dispatchShellReservations();
+Value reservationToJs(const brocompositor::EdgeReservation& r);
 
 } // namespace brocompositor::api

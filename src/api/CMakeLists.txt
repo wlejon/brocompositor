@@ -4,6 +4,7 @@ add_library(brocompositor_api STATIC
     native_windows.cpp
     native_workspaces.cpp
     native_events.cpp
+    native_policy.cpp
 )
 
 target_include_directories(brocompositor_api PUBLIC

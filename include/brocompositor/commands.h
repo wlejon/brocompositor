@@ -38,6 +38,35 @@ struct CloseWindow {
     WindowId id = kNoWindow;
 };
 
-using Command = std::variant<PlaceWindow, SetWindowVisible, FocusWindow, CloseWindow>;
+// A window's display state.
+enum class WindowState : uint32_t {
+    Normal = 0,      // neither minimized, maximized nor fullscreen
+    Minimized = 1,   // iconified: not drawn, not focusable until restored
+    Maximized = 2,   // fills its monitor's work area
+    Fullscreen = 3,  // covers its whole monitor without decoration
+};
+
+inline const char* to_string(WindowState s) {
+    switch (s) {
+        case WindowState::Normal: return "normal";
+        case WindowState::Minimized: return "minimized";
+        case WindowState::Maximized: return "maximized";
+        case WindowState::Fullscreen: return "fullscreen";
+    }
+    return "normal";
+}
+
+// Put a window into a state. The core pairs it with the PlaceWindow that
+// gives the state its geometry (the work area for Maximized, the monitor for
+// Fullscreen, the remembered frame when leaving either), sent after this
+// command. Minimized also hides the window; every other state un-minimizes
+// it and shows it again if it was minimized. A backend that cannot put
+// windows into states refuses the command: execute() returns false.
+struct SetWindowState {
+    WindowId id = kNoWindow;
+    WindowState state = WindowState::Normal;
+};
+
+using Command = std::variant<PlaceWindow, SetWindowVisible, FocusWindow, CloseWindow, SetWindowState>;
 
 }  // namespace brocompositor

@@ -75,7 +75,10 @@ int main() {
         "focusDirection", "getWorkspaces", "getWorkspace", "switchWorkspace",
         "createWorkspace", "removeWorkspace", "moveWindowToWorkspace", "setLayoutMode",
         "getLayoutMode", "relayout", "getMonitors", "on", "off", "addEventListener",
-        "removeEventListener", "addListener", "removeListener"
+        "removeEventListener", "addListener", "removeListener",
+        "minimizeWindow", "maximizeWindow", "fullscreenWindow", "restoreWindow",
+        "reserveEdge", "releaseEdge", "getReservations", "getWorkArea",
+        "getInteraction", "setInteraction"
     };
     for (const char* m : methods) {
         auto fn = ev::getProperty(comp.get(), m);
@@ -256,6 +259,82 @@ int main() {
         CHECK(ev::isString(r.value));
         CHECK(ev::toUtf8(r.value) == "ok");
         std::cout << "  getMonitors() passed." << std::endl;
+    }
+
+    // 7b. Window states, shell edge reservations, interaction policy
+    std::cout << "Testing window states, reservations and interaction..." << std::endl;
+    {
+        auto r = evalScript(
+            "(function() {\n"
+            "  const c = bro.compositor;\n"
+            "  let seen = null;\n"
+            "  const h = c.on('reservationChanged', (e) => { seen = e; });\n"
+            "  const wa0 = c.getWorkArea();\n"
+            "  if (!wa0 || wa0.y !== 40 || wa0.height !== 1040) return 'platform work area: ' + JSON.stringify(wa0);\n"
+            "  const id = c.reserveEdge('top', 34);\n"
+            "  if (!(id > 0)) return 'reserveEdge failed';\n"
+            "  if (!seen || seen.id !== id || seen.shell !== true || seen.edge !== 'top') return 'no reservationChanged';\n"
+            "  if (seen.rect.y !== 40 || seen.rect.height !== 34) return 'granted rect ' + JSON.stringify(seen.rect);\n"
+            "  const wa = c.getWorkArea(1);\n"
+            "  if (wa.y !== 74 || wa.height !== 1006) return 'work area ' + JSON.stringify(wa);\n"
+            "  if (c.getMonitors()[0].workArea.y !== 74) return 'monitor work area not shrunk';\n"
+            "  if (c.getReservations().length !== 1) return 'getReservations';\n"
+            "  if (c.reserveEdge('diagonal', 10) !== 0) return 'bad edge accepted';\n"
+            "\n"
+            "  const before = c.getWindow(2).frame;\n"
+            "  if (c.maximizeWindow(2) !== true) return 'maximizeWindow failed';\n"
+            "  let w = c.getWindow(2);\n"
+            "  if (!w.maximized || w.frame.y !== 74 || w.frame.width !== 1920) return 'not maximized ' + JSON.stringify(w.frame);\n"
+            "  if (c.restoreWindow(2) !== true) return 'restoreWindow failed';\n"
+            "  w = c.getWindow(2);\n"
+            "  if (w.maximized || w.frame.x !== before.x || w.frame.width !== before.width) return 'not restored';\n"
+            "  if (c.fullscreenWindow(2) !== true || !c.getWindow(2).fullscreen) return 'fullscreen';\n"
+            "  if (c.getWindow(2).frame.y !== 0 || c.getWindow(2).frame.height !== 1080) return 'fullscreen frame';\n"
+            "  c.restoreWindow(2);\n"
+            "  if (c.minimizeWindow(2) !== true || !c.getWindow(2).minimized) return 'minimize';\n"
+            "  if (c.restoreWindow(2) !== true || c.getWindow(2).minimized) return 'unminimize';\n"
+            "  if (c.maximizeWindow(9999) !== false) return 'unknown window maximized';\n"
+            "\n"
+            "  if (c.releaseEdge(id) !== true) return 'releaseEdge failed';\n"
+            "  if (seen.rect.height !== 0) return 'release not reported';\n"
+            "  if (c.releaseEdge(id) !== false) return 'double release';\n"
+            "  if (c.getWorkArea().y !== 40) return 'work area not restored';\n"
+            "  h.remove();\n"
+            "\n"
+            "  const i0 = c.getInteraction();\n"
+            "  if (i0.titlebarHeight !== 38 || i0.resizeBorder !== 6) return 'interaction defaults';\n"
+            "  if (i0.dragModifiers.join(',') !== 'alt,super') return 'drag modifiers ' + i0.dragModifiers;\n"
+            "  const i1 = c.setInteraction({ titlebarHeight: 30, dragModifiers: 'super' });\n"
+            "  if (i1.titlebarHeight !== 30 || i1.resizeBorder !== 6 || i1.dragModifiers.join() !== 'super') return 'setInteraction';\n"
+            "  c.setInteraction({ dragModifiers: [] });\n"
+            "  if (c.getInteraction().dragModifiers.length !== 0) return 'clear modifiers';\n"
+            "  c.setInteraction({ titlebarHeight: 38, dragModifiers: ['super', 'alt'] });\n"
+            "  return 'ok';\n"
+            "})();\n"
+        );
+        CHECK(!r.thrown);
+        CHECK(ev::isString(r.value));
+        if (ev::toUtf8(r.value) != "ok") std::cerr << "  got: " << ev::toUtf8(r.value) << std::endl;
+        CHECK(ev::toUtf8(r.value) == "ok");
+
+        // A backend that cannot put windows into states: the call reports it.
+        brocompositor::api::setCommandSink([](const std::vector<Command>& cmds) {
+            size_t refused = 0;
+            for (const auto& c : cmds) refused += std::holds_alternative<SetWindowState>(c) ? 1 : 0;
+            return refused;
+        });
+        auto r2 = evalScript(
+            "(function() {\n"
+            "  if (bro.compositor.maximizeWindow(2) !== false) return 'refused state reported as success';\n"
+            "  if (bro.compositor.getWindow(2).maximized) return 'refused state echoed';\n"
+            "  return 'ok';\n"
+            "})();\n"
+        );
+        brocompositor::api::setCommandSink(nullptr);
+        CHECK(!r2.thrown);
+        CHECK(ev::isString(r2.value));
+        CHECK(ev::toUtf8(r2.value) == "ok");
+        std::cout << "  Window states, reservations and interaction passed." << std::endl;
     }
 
     // 8. Test Event Subscriptions

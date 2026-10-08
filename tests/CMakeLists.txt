@@ -14,6 +14,7 @@ endfunction()
 # Portable core: runs everywhere.
 bc_test(test_layout SOURCES core/test_layout.cpp LIBS brocompositor_core)
 bc_test(test_window_manager SOURCES core/test_window_manager.cpp LIBS brocompositor_core)
+bc_test(test_window_policy SOURCES core/test_window_policy.cpp LIBS brocompositor_core)
 bc_test(test_event_queue SOURCES core/test_event_queue.cpp LIBS brocompositor_core)
 # Shell-role plumbing (crash-recovery journal, per-process workers): portable.
 bc_test(test_shell_common SOURCES core/test_shell_common.cpp LIBS brocompositor_shell_common)

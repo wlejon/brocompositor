@@ -1,5 +1,6 @@
 #pragma once
 
+#include "brocompositor/commands.h"
 #include "brocompositor/geometry.h"
 
 #include <optional>
@@ -15,6 +16,7 @@ inline std::ostream& operator<<(std::ostream& os, const Point& p) {
     return os << "(" << p.x << "," << p.y << ")";
 }
 inline std::ostream& operator<<(std::ostream& os, const Size& s) { return os << s.width << "x" << s.height; }
+inline std::ostream& operator<<(std::ostream& os, WindowState s) { return os << to_string(s); }
 
 }  // namespace brocompositor
 

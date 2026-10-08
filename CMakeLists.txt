@@ -58,6 +58,7 @@ endfunction()
 add_library(brocompositor_core STATIC
     src/core/layout.cpp
     src/core/window_manager.cpp
+    src/core/window_manager_policy.cpp
 )
 add_library(brocompositor::core ALIAS brocompositor_core)
 target_include_directories(brocompositor_core PUBLIC

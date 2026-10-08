@@ -74,9 +74,29 @@ bool ServerBackend::execute(const Command& command) {
             if constexpr (std::is_same_v<T, PlaceWindow>) return place(c.id, c.frame);
             else if constexpr (std::is_same_v<T, SetWindowVisible>) return set_visible(c.id, c.visible);
             else if constexpr (std::is_same_v<T, FocusWindow>) return focus(c.id);
-            else return close(c.id);
+            else if constexpr (std::is_same_v<T, CloseWindow>) return close(c.id);
+            else if constexpr (std::is_same_v<T, SetWindowState>) return apply_state(c.id, c.state);
+            else static_assert(sizeof(T) == 0, "unhandled Command");
         },
         command);
+}
+
+// The xdg / X11 maximized and fullscreen flags, plus minimize. Minimized
+// windows are hidden (xdg-shell has no client-side minimize, so the server
+// simply stops drawing them); leaving it shows the window again.
+bool ServerBackend::apply_state(WindowId id, WindowState state) {
+    auto snap = query(id);
+    if (!snap) return false;
+    if (state == WindowState::Minimized) {
+        bool ok = set_window_minimized(id, true);
+        return set_visible(id, false) && ok;
+    }
+    bool ok = set_window_state(id, state == WindowState::Maximized, state == WindowState::Fullscreen);
+    if (snap->minimized) {
+        ok = set_window_minimized(id, false) && ok;
+        ok = set_visible(id, true) && ok;
+    }
+    return ok;
 }
 
 size_t ServerBackend::execute(const std::vector<Command>& commands) {

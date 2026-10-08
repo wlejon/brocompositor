@@ -35,7 +35,9 @@ void setEventQueue(std::shared_ptr<brocompositor::EventQueue> queue);
 std::shared_ptr<brocompositor::EventQueue> getEventQueue();
 
 /// Sets an optional command sink for executing commands emitted by WindowManager.
-using CommandSink = std::function<void(const std::vector<brocompositor::Command>&)>;
+/// The sink returns how many commands the backend refused (a backend's
+/// execute() result); calls whose commands were refused report failure to JS.
+using CommandSink = std::function<size_t(const std::vector<brocompositor::Command>&)>;
 void setCommandSink(CommandSink sink);
 
 } // namespace brocompositor::api

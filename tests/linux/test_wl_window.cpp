@@ -128,6 +128,42 @@ void run(Host& host) {
     CHECK(host.wait([&] { return host.server().visible(wa) && host.server().visible(wb); }));
     CHECK(host.wait([&] { return host.last_drawn(mon).count(root) == 1; }));
 
+    // Window states through the WM: a shell reservation, maximize into the
+    // work area it leaves, minimize hides, restore brings it back maximized.
+    host.wm_do([&](WindowManager& wm) { return wm.set_layout(ws, LayoutMode::Floating); });
+    ReservationId bar = kNoReservation;
+    host.wm_do([&](WindowManager& wm) {
+        auto r = wm.reserve_edge(mon, Edge::Top, 30);
+        bar = r.id;
+        return r.commands;
+    });
+    const Rect work{screen.x, screen.y + 30, screen.width, screen.height - 30};
+    std::optional<Rect> before;
+    host.wm_do([&](WindowManager& wm) {
+        before = wm.window(wb)->snapshot.frame;
+        return wm.maximize(wb);
+    });
+    CHECK(host.wait([&] {
+        auto w = host.wm_window(wb);
+        return w && w->maximized && w->frame == work;
+    }));
+    host.wm_do([&](WindowManager& wm) { return wm.minimize(wb); });
+    CHECK(host.wait([&] {
+        auto w = host.wm_window(wb);
+        return w && w->minimized && !host.server().visible(wb);
+    }));
+    host.wm_do([&](WindowManager& wm) { return wm.restore(wb); });
+    CHECK(host.wait([&] {
+        auto w = host.wm_window(wb);
+        return w && !w->minimized && w->maximized && host.server().visible(wb);
+    }));
+    host.wm_do([&](WindowManager& wm) { return wm.restore(wb); });
+    CHECK(host.wait([&] {
+        auto w = host.wm_window(wb);
+        return w && !w->maximized && before && w->frame == *before;
+    }));
+    host.wm_do([&](WindowManager& wm) { return wm.release_edge(bar); });
+
     // CloseWindow -> xdg_toplevel.close -> the client exits -> WindowRemoved.
     CHECK(host.server().execute(Command{CloseWindow{wb}}));
     CHECK(b->wait_line("close", 5000));

@@ -12,6 +12,12 @@
 // Safety default: every workspace starts in LayoutMode::Floating, in which
 // the core never moves a window. Nothing is retiled until the host opts a
 // workspace into a tiling layout.
+//
+// Window-management policy a shell may tune also lives here: window states
+// (minimize / maximize / fullscreen / restore), edge reservations for the
+// shell's own panels (they shrink the work area maximize and tiling use), and
+// how a pointer press on a window frame is interpreted (InteractionConfig,
+// classify_press) for hosts that draw the desktop themselves.
 #pragma once
 
 #include "brocompositor/commands.h"
@@ -27,6 +33,58 @@
 
 namespace brocompositor {
 
+// Modifier bits for the pointer-interaction policy.
+namespace modifier {
+inline constexpr uint32_t Shift = 1u << 0;
+inline constexpr uint32_t Ctrl = 1u << 1;
+inline constexpr uint32_t Alt = 1u << 2;
+inline constexpr uint32_t Super = 1u << 3;
+}  // namespace modifier
+
+// Resize edges (the xdg_toplevel resize_edge bit values).
+namespace resize_edge {
+inline constexpr uint32_t Top = 1;
+inline constexpr uint32_t Bottom = 2;
+inline constexpr uint32_t Left = 4;
+inline constexpr uint32_t Right = 8;
+}  // namespace resize_edge
+
+enum class PressButton : uint32_t { Left = 0, Right = 1, Middle = 2, Other = 3 };
+
+// How a press on a window is read by a host that routes the pointer itself
+// (bro's DRM shell host). Coordinates are those of WindowSnapshot::frame.
+struct InteractionConfig {
+    int32_t titlebar_height = 38;  // band at the top of a frame whose left-press drags the window (0: off)
+    int32_t resize_border = 6;     // band inside the frame edges whose left-press resizes (0: off)
+    // Holding any of these: left-press anywhere moves, right-press resizes
+    // from the bottom-right corner (0: off).
+    uint32_t drag_modifiers = modifier::Super | modifier::Alt;
+};
+
+enum class PressAction : uint32_t { None = 0, Move = 1, Resize = 2 };
+
+struct PressDecision {
+    PressAction action = PressAction::None;
+    uint32_t edges = 0;      // resize_edge bits for Resize
+    bool immediate = true;   // false: start only once the pointer has moved a few pixels
+    bool forward = false;    // the press also goes to the client (a title-bar click stays a click)
+    bool operator==(const PressDecision&) const = default;
+};
+
+// An edge band the shell keeps for its own panels. Shell reservation ids
+// start at kShellReservationBase, apart from the ids a platform mints for
+// its own reservations (layer-shell exclusive zones, appbars), which reach
+// the host as ReservationChanged events.
+inline constexpr ReservationId kShellReservationBase = ReservationId(1) << 48;
+
+struct EdgeReservation {
+    ReservationId id = kNoReservation;
+    MonitorId monitor = kNoMonitor;  // as requested; kNoMonitor follows the primary monitor
+    Edge edge = Edge::Top;
+    int32_t thickness = 0;
+    Rect rect;                       // the granted band (empty while its monitor is absent)
+};
+
 struct WindowManagerConfig {
     LayoutConfig layout;
     LayoutMode default_layout = LayoutMode::Floating;
@@ -37,6 +95,7 @@ struct WindowManagerConfig {
     std::function<bool(const WindowSnapshot&)> manage;
     // Which managed windows start floating (null: transient or fixed-size ones).
     std::function<bool(const WindowSnapshot&)> float_rule;
+    InteractionConfig interaction;
 };
 
 struct WorkspaceView {
@@ -76,7 +135,46 @@ public:
     std::vector<Command> swap(WindowId a, WindowId b);
     std::vector<Command> relayout(WorkspaceId id);
 
+    // ---- window states ----
+    // Each returns the commands to send (SetWindowState, then the PlaceWindow
+    // giving the state its geometry, plus any focus change); empty when the
+    // window is unknown or already in that state. Maximize fills the work
+    // area of the window's workspace monitor (shell reservations included);
+    // the frame it had is remembered and restore() puts it back (a tiled
+    // window is re-tiled instead). Restoring a minimized window brings back
+    // the state it was minimized from and focuses it. A window the core
+    // maximized follows its work area when reservations or monitors change.
+    std::vector<Command> minimize(WindowId id);
+    std::vector<Command> maximize(WindowId id);
+    std::vector<Command> fullscreen(WindowId id);
+    std::vector<Command> restore(WindowId id);
+
+    // ---- edge reservations (the shell's own panels) ----
+    // reserve_edge carves `thickness` pixels off `edge` of the monitor's work
+    // area (kNoMonitor: the primary monitor, following it when it changes),
+    // after the platform's own reservations and earlier shell reservations.
+    // Tiled workspaces and windows the core maximized are re-placed.
+    struct ReserveResult {
+        ReservationId id = kNoReservation;  // kNoReservation: thickness <= 0
+        std::vector<Command> commands;
+    };
+    ReserveResult reserve_edge(MonitorId monitor, Edge edge, int32_t thickness);
+    std::vector<Command> release_edge(ReservationId id);
+    std::optional<EdgeReservation> reservation(ReservationId id) const;
+    std::vector<EdgeReservation> reservations() const;
+    // Bounds minus platform and shell reservations (empty for an unknown monitor).
+    Rect work_area(MonitorId monitor) const;
+
+    // ---- pointer interaction policy ----
+    const InteractionConfig& interaction() const { return config_.interaction; }
+    void set_interaction(const InteractionConfig& config) { config_.interaction = config; }
+    // What a press at `p` (frame coordinates) with `modifiers` held means for
+    // window `id` under the interaction policy; None for an unknown window or
+    // a press the client should simply get.
+    PressDecision classify_press(WindowId id, Point p, uint32_t modifiers, PressButton button) const;
+
     // ---- queries (values) ----
+    // Monitors as reported, with work_area also excluding shell reservations.
     const std::vector<MonitorSnapshot>& monitors() const { return monitors_; }
     std::vector<WorkspaceView> workspaces() const;
     std::optional<WorkspaceView> workspace(WorkspaceId id) const;
@@ -93,6 +191,8 @@ private:
         bool shown = true;
         Rect floating_rect;
         std::optional<Rect> placed;  // last frame the core asked for
+        std::optional<Rect> restore_rect;  // frame before the core maximized / fullscreened it
+        WindowState sized = WindowState::Normal;  // Maximized / Fullscreen: the core put it there and keeps it fitted
     };
     struct Ws {
         WorkspaceId id = kNoWorkspace;
@@ -126,9 +226,17 @@ private:
     void attach(WindowId id, Win& w, WorkspaceId ws);
     void touch_focus(Ws& ws, WindowId id);
     WorkspaceView view(const Ws& ws) const;
+    void apply_reservations();  // monitors_ = reported_ minus shell reservations
+    void refit_sized();         // re-place windows the core maximized / fullscreened
+    const MonitorSnapshot* window_monitor(const Win& w) const;
+    void refocus_away_from(WindowId id);
+    std::vector<Command> enter_sized_state(WindowId id, WindowState state);
 
     WindowManagerConfig config_;
-    std::vector<MonitorSnapshot> monitors_;
+    std::vector<MonitorSnapshot> reported_;  // as the backend reported them
+    std::vector<MonitorSnapshot> monitors_;  // reported_ with shell reservations applied
+    std::map<ReservationId, EdgeReservation> reservations_;
+    ReservationId next_reservation_ = kShellReservationBase + 1;
     std::map<WorkspaceId, Ws> workspaces_;
     std::map<MonitorId, WorkspaceId> active_;
     std::map<WindowId, Win> windows_;

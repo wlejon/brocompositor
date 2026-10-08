@@ -50,6 +50,7 @@ std::vector<Command> WindowManager::handle(const Event& event) {
 
 bool WindowManager::is_tiled(const Win& w) const {
     if (w.floating || w.snap.minimized || w.snap.maximized || w.snap.fullscreen) return false;
+    if (w.sized != WindowState::Normal) return false;
     auto it = workspaces_.find(w.ws);
     return it != workspaces_.end() && it->second.layout != LayoutMode::Floating;
 }
@@ -180,7 +181,8 @@ void WindowManager::on_monitors(const MonitorsChanged& e) {
     std::vector<MonitorId> added;
     for (const auto& n : e.monitors)
         if (!monitor(n.id)) added.push_back(n.id);
-    monitors_ = e.monitors;
+    reported_ = e.monitors;
+    apply_reservations();
 
     for (MonitorId mid : added) {
         bool has_ws = false;
@@ -212,6 +214,7 @@ void WindowManager::on_monitors(const MonitorsChanged& e) {
     }
 
     for (auto& [mid, wsid] : active_) do_relayout(wsid);
+    refit_sized();
 }
 
 void WindowManager::on_added(const WindowSnapshot& s) {
@@ -269,9 +272,16 @@ void WindowManager::on_changed(const WindowChanged& e) {
     bool state = old.minimized != w.snap.minimized || old.maximized != w.snap.maximized ||
                  old.fullscreen != w.snap.fullscreen;
     if (state && !w.snap.minimized && !w.snap.maximized) w.placed.reset();
+    // Left maximized / fullscreen by itself (the client, the user, a drag):
+    // the core no longer keeps it fitted or owes it a restore.
+    if ((old.maximized || old.fullscreen) && !w.snap.maximized && !w.snap.fullscreen) {
+        w.sized = WindowState::Normal;
+        w.restore_rect.reset();
+    }
     bool moving = moving_.count(w.snap.id) != 0;
 
-    if (w.floating && w.shown && !moving && !w.snap.minimized && !w.snap.maximized)
+    if (w.floating && w.shown && !moving && !w.snap.minimized && !w.snap.maximized &&
+        !w.snap.fullscreen && w.sized == WindowState::Normal)
         w.floating_rect = w.snap.frame;
 
     // Moved to another monitor without a drag (keyboard snap, app-initiated):

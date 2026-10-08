@@ -32,6 +32,18 @@ void defaultExecuteCommands(const std::vector<brocompositor::Command>& cmds,
             wm.handle(brocompositor::FocusChanged{f->id});
         } else if (auto* cw = std::get_if<brocompositor::CloseWindow>(&c)) {
             wm.handle(brocompositor::WindowRemoved{cw->id});
+        } else if (auto* st = std::get_if<brocompositor::SetWindowState>(&c)) {
+            auto v = wm.window(st->id);
+            if (v) {
+                brocompositor::WindowSnapshot s = v->snapshot;
+                using WS = brocompositor::WindowState;
+                s.minimized = st->state == WS::Minimized;
+                if (st->state != WS::Minimized) {
+                    s.maximized = st->state == WS::Maximized;
+                    s.fullscreen = st->state == WS::Fullscreen;
+                }
+                wm.handle(brocompositor::WindowChanged{s, brocompositor::change::State});
+            }
         }
     }
 }
@@ -88,8 +100,8 @@ void setCommandSink(CommandSink sink) {
     g_custom_command_sink = std::move(sink);
 }
 
-void dispatchCommands(const std::vector<brocompositor::Command>& cmds) {
-    if (cmds.empty()) return;
+size_t dispatchCommands(const std::vector<brocompositor::Command>& cmds) {
+    if (cmds.empty()) return 0;
 
     CommandSink sink;
     std::shared_ptr<brocompositor::WindowManager> wm;
@@ -99,12 +111,15 @@ void dispatchCommands(const std::vector<brocompositor::Command>& cmds) {
         wm = g_custom_wm ? g_custom_wm : g_default_wm;
     }
 
+    size_t refused = 0;
     if (sink) {
-        sink(cmds);
+        refused = sink(cmds);
     }
-    if (wm) {
+    // Commands a backend refused are not echoed as if they had happened.
+    if (wm && refused == 0) {
         defaultExecuteCommands(cmds, *wm);
     }
+    return refused;
 }
 
 Value makeError(const std::string& msg) {
@@ -248,6 +263,7 @@ void installCompositor() {
     installWindowsOnto(compObj.get());
     installWorkspacesOnto(compObj.get());
     installEventsOnto(compObj.get());
+    installPolicyOnto(compObj.get());
 }
 
 void tickCompositorAsync() {

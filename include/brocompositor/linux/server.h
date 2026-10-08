@@ -228,6 +228,7 @@ public:
     bool set_visible(WindowId id, bool visible);
     bool focus(WindowId id);
     bool close(WindowId id);
+    bool apply_state(WindowId id, WindowState state);  // SetWindowState
 
     // ---- windows ----
     std::optional<WindowSnapshot> query(WindowId id) const;

@@ -109,6 +109,9 @@ const Permissions& ShellBackend::permissions() const { return impl_->permissions
 
 bool ShellBackend::execute(const Command& command) {
     WindowId id = std::visit([](const auto& c) { return c.id; }, command);
+    // Window states are not implemented by the shell backends: refused, so
+    // the host can report them unsupported.
+    if (std::holds_alternative<SetWindowState>(command)) return false;
     bool focus_none = std::holds_alternative<FocusWindow>(command) && id == kNoWindow;
     if (!focus_none && !impl_->cgid_of(id)) return false;
     std::visit(

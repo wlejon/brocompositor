@@ -394,6 +394,29 @@ int main() {
         CHECK(!r2.thrown);
         CHECK(ev::isString(r2.value));
         CHECK(ev::toUtf8(r2.value) == "ok");
+
+        // A page that goes away (a shell reloading) takes its reservations
+        // with it; the next page's reservation is the only one.
+        auto r3 = evalScript(
+            "(function() {\n"
+            "  globalThis.__kept = bro.compositor.reserveEdge('bottom', 40);\n"
+            "  return bro.compositor.getWorkArea().height === 1000 ? 'ok' : 'reserve';\n"
+            "})();\n");
+        CHECK(ev::toUtf8(r3.value) == "ok");
+        brocompositor::api::resetCompositorScript();
+        auto r4 = evalScript(
+            "(function() {\n"
+            "  const c = bro.compositor;\n"
+            "  if (c.getReservations().length !== 0) return 'reservation outlived its page';\n"
+            "  if (c.getWorkArea().height !== 1040) return 'work area ' + JSON.stringify(c.getWorkArea());\n"
+            "  if (c.releaseEdge(globalThis.__kept) !== false) return 'released twice';\n"
+            "  const id = c.reserveEdge('bottom', 40);\n"
+            "  if (c.getReservations().length !== 1 || c.getWorkArea().height !== 1000) return 'new page';\n"
+            "  c.releaseEdge(id);\n"
+            "  return 'ok';\n"
+            "})();\n");
+        if (ev::toUtf8(r4.value) != "ok") std::cerr << "  got: " << ev::toUtf8(r4.value) << std::endl;
+        CHECK(ev::toUtf8(r4.value) == "ok");
         std::cout << "  Window states, reservations and interaction passed." << std::endl;
     }
 

@@ -5,11 +5,17 @@
 #include "arg_reader.h"
 #include "object_builder.h"
 
+#include <algorithm>
 #include <cctype>
 
 namespace brocompositor::api {
 
 namespace {
+
+// The reservations script made through reserveEdge and has not released:
+// they belong to the page, so they go when it does (releaseScriptReservations).
+// Touched only on the JS thread.
+std::vector<ReservationId> g_script_reservations;
 
 const char* edgeName(Edge e) {
     switch (e) {
@@ -142,6 +148,19 @@ void dispatchShellReservations() {
     for (const auto& r : wm->reservations()) emitReservation(r);
 }
 
+void releaseScriptReservations() {
+    std::vector<ReservationId> ids;
+    ids.swap(g_script_reservations);
+    auto wm = activeWindowManager();
+    if (!wm) return;
+    std::vector<Command> commands;
+    for (ReservationId id : ids) {
+        auto more = wm->release_edge(id);
+        commands.insert(commands.end(), more.begin(), more.end());
+    }
+    dispatchCommands(commands);
+}
+
 void installPolicyOnto(Value compObj) {
     ObjectBuilder comp(compObj);
 
@@ -169,6 +188,7 @@ void installPolicyOnto(Value compObj) {
         auto wm = activeWindowManager();
         if (!wm || thickness <= 0) return ev::fromDouble(0.0);
         auto res = wm->reserve_edge(mon, edge, thickness);
+        if (res.id != kNoReservation) g_script_reservations.push_back(res.id);
         dispatchCommands(res.commands);
         if (auto r = wm->reservation(res.id)) emitReservation(*r);
         return ev::fromDouble(static_cast<double>(res.id));
@@ -182,6 +202,7 @@ void installPolicyOnto(Value compObj) {
         ReservationId id = reader.getUint64(0);
         auto r = wm->reservation(id);
         if (!r) return ev::fromBool(false);
+        std::erase(g_script_reservations, id);
         dispatchCommands(wm->release_edge(id));
         r->rect = Rect{};
         emitReservation(*r);

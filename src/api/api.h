@@ -22,6 +22,12 @@ void tickCompositorAsync();
 /// Clears active handlers and listeners.
 void shutdownCompositorAsync();
 
+/// The page that used `bro.compositor` is going away while the compositor
+/// stays (a host reloading its shell): drops its listeners and releases the
+/// edge reservations it made, so the next page starts from the platform's
+/// work area rather than stacking its own reservations on the old page's.
+void resetCompositorScript();
+
 /// Sets the WindowManager used by the API (if nullptr, a default WindowManager is used).
 void setWindowManager(std::shared_ptr<brocompositor::WindowManager> wm);
 

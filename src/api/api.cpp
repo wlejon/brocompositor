@@ -304,4 +304,9 @@ void shutdownCompositorAsync() {
     clearCompositorListeners();
 }
 
+void resetCompositorScript() {
+    clearCompositorListeners();
+    releaseScriptReservations();
+}
+
 } // namespace brocompositor::api

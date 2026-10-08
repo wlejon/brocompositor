@@ -49,6 +49,8 @@ void clearCompositorListeners();
 void dispatchListenerEvent(const std::string& type, Value eventPayload);
 // reservationChanged for every shell reservation (after a monitor change).
 void dispatchShellReservations();
+// Releases every reservation script made and did not release itself.
+void releaseScriptReservations();
 Value reservationToJs(const brocompositor::EdgeReservation& r);
 // stackingChanged / snapPreview, when they changed since the last call.
 void dispatchInteractionChanges();

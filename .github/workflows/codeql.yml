@@ -49,16 +49,11 @@ jobs:
             libwlroots-0.18-dev wayland-protocols libwayland-dev libxkbcommon-dev libpixman-1-dev \
             libdrm-dev libgbm-dev libvulkan-dev libxcb1-dev libxcb-randr0-dev libxau-dev libglib2.0-dev
 
+      # brodisplays and bronze (with brass) are fetched at configure from the
+      # pinned commits.
       - uses: actions/checkout@v7
         with:
           path: brocompositor
-
-      - uses: actions/checkout@v7
-        with:
-          repository: wlejon/brodisplays
-          path: brodisplays
-
-      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - uses: actions/checkout@v7
         if: runner.os == 'Windows'

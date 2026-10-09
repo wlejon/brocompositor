@@ -4,7 +4,9 @@
 # command with the workspace mounted at /w:
 #
 #   /w/brocompositor           this repo
-#   /w/brodisplays             the sibling
+#
+# brodisplays and bronze (with brass) come from the commits CMakeLists.txt pins
+# (cmake/bro_deps.cmake), fetched at configure.
 #
 # Environment: CC / CXX (gcc|clang), CONFIG (Release|Debug), COVERAGE (ON|OFF),
 # BROCOMPOSITOR_DRM_DEVICE (a vkms card the host loaded, or empty).

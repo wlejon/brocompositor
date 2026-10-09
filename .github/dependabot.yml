@@ -1,12 +1,10 @@
 version: 2
 
-# No package manifest to watch: the one sibling (brodisplays) is resolved by
-# CMake from ../ or the third_party/brodisplays submodule, and wlroots and the
+# No package manifest to watch: the one sibling (brodisplays) and bronze are
+# bro_dependency() pins in CMakeLists.txt, moved deliberately (bro's
+# scripts/bump-deps.sh); a ../<name> working tree wins locally. wlroots and the
 # other system libraries come from the OS. That leaves the pinned actions in
 # .github/workflows/.
-#
-# Note that the brodisplays submodule therefore moves by hand: CI builds
-# against brodisplays main, and only the submodule job uses the pinned commit.
 updates:
   - package-ecosystem: github-actions
     directory: /

@@ -93,37 +93,15 @@ brocompositor_warnings(brocompositor_shell_common)
 # display server: it owns its outputs and publishes them (wl_output,
 # wlr-output-management, wlr-gamma-control), and brodisplays is one of its
 # clients; there it is needed only by the integration test.
-# Resolved like every bro sibling: an existing `brodisplays` target (a
-# superbuild already added it) wins; otherwise a standalone checkout beside
-# the top-level project (../brodisplays, overridable with
-# -DBRODISPLAYS_DIR=<path>); otherwise the top-level project's
-# third_party/brodisplays submodule (`git submodule update --init --recursive`).
-set(_bc_need_brodisplays OFF)
+# Resolved through cmake/bro_deps.cmake: an existing `brodisplays` target (a
+# superbuild already added it) wins; otherwise the ../brodisplays working tree
+# beside the top-level project; otherwise the pinned commit, fetched at
+# configure. The pin is declared here; it is added here on Windows and macOS,
+# and further down on Linux for the test only.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
+bro_dependency(brodisplays GITHUB wlejon/brodisplays REF 8f1bb8b0d2c8c580b5a71d0d34b4b580ed9b2a47 PIN_ONLY)
 if(WIN32 OR APPLE)
-    set(_bc_need_brodisplays ON)
-endif()
-set(_bc_brodisplays_src "")
-if(NOT TARGET brodisplays)
-    set(BRODISPLAYS_DIR "${CMAKE_SOURCE_DIR}/../brodisplays" CACHE PATH
-        "Path to standalone brodisplays repo (set to a missing path to force submodule fallback)")
-    if(EXISTS "${BRODISPLAYS_DIR}/CMakeLists.txt")
-        set(_bc_brodisplays_src "${BRODISPLAYS_DIR}")
-        set(_bc_brodisplays_how "")
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/brodisplays/CMakeLists.txt")
-        set(_bc_brodisplays_src "${CMAKE_SOURCE_DIR}/third_party/brodisplays")
-        set(_bc_brodisplays_how " (submodule)")
-    endif()
-    if(_bc_need_brodisplays)
-        if(NOT _bc_brodisplays_src)
-            message(FATAL_ERROR
-                "brodisplays not found at ${BRODISPLAYS_DIR} or ${CMAKE_SOURCE_DIR}/third_party/brodisplays. "
-                "Clone https://github.com/wlejon/brodisplays next to this repo, run "
-                "`git submodule update --init --recursive`, or override with -DBRODISPLAYS_DIR=...")
-        endif()
-        message(STATUS "brocompositor: brodisplays from ${_bc_brodisplays_src}${_bc_brodisplays_how}")
-        set(BRODISPLAYS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        add_subdirectory("${_bc_brodisplays_src}" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
-    endif()
+    bro_dependency(brodisplays OPTIONS BRODISPLAYS_BUILD_TESTS=OFF)
 endif()
 
 # ---------------------------------------------------------------- Windows
@@ -383,14 +361,11 @@ if(BROCOMPOSITOR_WITH_VULKAN)
 endif()
 
 # Linux: brodisplays only for the test that runs it as a client of this
-# server (skipped when the repo or its X11 dependencies are missing).
-if(BROCOMPOSITOR_BUILD_TESTS AND BROCOMPOSITOR_WITH_WAYLAND AND NOT TARGET brodisplays
-   AND _bc_brodisplays_src)
+# server (skipped when its X11 dependencies are missing).
+if(BROCOMPOSITOR_BUILD_TESTS AND BROCOMPOSITOR_WITH_WAYLAND AND NOT TARGET brodisplays)
     pkg_check_modules(BC_BRODISPLAYS_DEPS QUIET xcb xcb-randr xau)
     if(BC_BRODISPLAYS_DEPS_FOUND)
-        message(STATUS "brocompositor: brodisplays (tests) from ${_bc_brodisplays_src}${_bc_brodisplays_how}")
-        set(BRODISPLAYS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        add_subdirectory("${_bc_brodisplays_src}" "${CMAKE_BINARY_DIR}/brodisplays" EXCLUDE_FROM_ALL)
+        bro_dependency(brodisplays OPTIONS BRODISPLAYS_BUILD_TESTS=OFF)
     else()
         message(STATUS "brocompositor: test_wl_brodisplays skipped (brodisplays needs xcb, xcb-randr, xau)")
     endif()
@@ -403,25 +378,11 @@ endif()
 # rule keeps brodisplays' own api off when it is added above as a dependency.
 option(BROCOMPOSITOR_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
 if(BROCOMPOSITOR_ENABLE_API)
-    if(NOT TARGET bronze_runtime_shared)
-        set(BRONZE_BUILD_SHARED_RUNTIME ON CACHE BOOL "" FORCE)
-        set(BRONZE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        if(DEFINED BRONZE_DIR AND EXISTS "${BRONZE_DIR}/CMakeLists.txt")
-            # Explicit BRONZE_DIR supplied
-        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../bronze/CMakeLists.txt")
-            set(BRONZE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bronze" CACHE PATH "bronze source tree")
-        elseif(EXISTS "${CMAKE_SOURCE_DIR}/../bronze/CMakeLists.txt")
-            set(BRONZE_DIR "${CMAKE_SOURCE_DIR}/../bronze" CACHE PATH "bronze source tree")
-        endif()
-
-        if(NOT BRONZE_DIR OR NOT EXISTS "${BRONZE_DIR}/CMakeLists.txt")
-            message(FATAL_ERROR
-                "bronze not found: check it out beside this repository (../bronze, with ../brass beside it) "
-                "or pass -DBRONZE_DIR=<path>.")
-        endif()
-
-        add_subdirectory("${BRONZE_DIR}" "${CMAKE_BINARY_DIR}/bronze-build" EXCLUDE_FROM_ALL)
-    endif()
+    # bronze (with brass, its code generator) through cmake/bro_deps.cmake: an
+    # outer project's target, else ../bronze beside the top-level project, else
+    # the pinned commit, fetched at configure.
+    bro_dependency(bronze GITHUB wlejon/bronze REF 15ce4cf5fc25d8afe03882985ae95adcba46a6a9 TARGET bronze_runtime_shared
+                   OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
 
     add_subdirectory(src/api)
 endif()

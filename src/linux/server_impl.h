@@ -226,6 +226,7 @@ struct Mirror {
     std::vector<MonitorSnapshot> monitors;
     CursorChanged cursor{kNoSurface, {}, "default", false};
     double cursor_x = 0, cursor_y = 0;
+    std::optional<SurfaceNode> drag_icon;  // offset: against the pointer
     std::vector<UnmanagedSurfaceInfo> unmanaged;  // mapped, bottom to top
     std::string xwayland_display;
     LockState lock_state = LockState::Unlocked;
@@ -278,7 +279,7 @@ struct Server {
         seat_start_drag;
     Listener output_mgr_apply, output_mgr_test, layout_change;
     Listener selection_changed, primary_changed;
-    Listener drag_icon_destroy;
+    Listener drag_icon_destroy, drag_icon_commit;
 
     std::unordered_map<wlr_surface*, std::unique_ptr<SurfaceRec>> surfaces;
     std::unordered_map<wlr_xdg_toplevel*, std::unique_ptr<ToplevelRec>> toplevels;
@@ -303,6 +304,7 @@ struct Server {
     wlr_surface* focused_layer = nullptr;
     wlr_surface* pointer_surface = nullptr;
     wlr_surface* drag_icon = nullptr;
+    Point drag_icon_offset;  // the icon's top-left against the pointer
 
     std::set<wlr_surface*> dirty_roots;
     bool all_trees_dirty = false;
@@ -506,6 +508,9 @@ struct Server {
     void inject_pointer_button(uint32_t button, bool pressed);
     void inject_pointer_axis(uint32_t orientation, double delta, int32_t discrete);
     void publish_cursor_position();
+    // The drag icon into the mirror (add_offset: take its commit's dx/dy).
+    void publish_drag_icon(bool add_offset);
+    void clear_drag_icon();
     void warp(double x, double y);
     // Sends wl_keyboard.modifiers to the focused client when they differ from
     // what it last saw.

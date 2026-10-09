@@ -55,13 +55,41 @@ void Server::init_selection() {
     seat_start_drag.connect(&seat->events.start_drag, [this](void* data) {
         auto* drag = static_cast<wlr_drag*>(data);
         drag_icon = drag->icon ? drag->icon->surface : nullptr;
+        drag_icon_offset = Point{};
+        if (drag_icon) {
+            // Where the icon sits against the pointer moves with each commit's
+            // offset (wl_surface.offset, or attach's dx/dy).
+            drag_icon_commit.connect(&drag_icon->events.commit, [this](void*) { publish_drag_icon(true); });
+        }
+        publish_drag_icon(drag_icon != nullptr);
         server_events.push(DragIconChanged{drag_icon ? surface_id(drag_icon) : kNoSurface});
         drag_icon_destroy.connect(&drag->events.destroy, [this](void*) {
-            drag_icon = nullptr;
+            clear_drag_icon();
             drag_icon_destroy.disconnect();
             server_events.push(DragIconChanged{kNoSurface});
         });
     });
+}
+
+void Server::publish_drag_icon(bool add_offset) {
+    if (!drag_icon) return;
+    if (add_offset) {
+        drag_icon_offset.x += drag_icon->current.dx;
+        drag_icon_offset.y += drag_icon->current.dy;
+    }
+    SurfaceNode node;
+    node.surface = surface_id(drag_icon);
+    node.offset = drag_icon_offset;
+    node.size = Size{drag_icon->current.width, drag_icon->current.height};
+    std::lock_guard<std::mutex> lock(mirror.m);
+    mirror.drag_icon = node;
+}
+
+void Server::clear_drag_icon() {
+    drag_icon_commit.disconnect();
+    drag_icon = nullptr;
+    std::lock_guard<std::mutex> lock(mirror.m);
+    mirror.drag_icon.reset();
 }
 
 }  // namespace brocompositor::wl

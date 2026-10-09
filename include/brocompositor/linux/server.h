@@ -294,6 +294,10 @@ public:
     // ---- surfaces ----
     std::shared_ptr<ClientSurface> surface(SurfaceId id) const;
     CursorChanged cursor() const;
+    // The icon of the drag under way (wl_data_device.start_drag), to draw at
+    // the pointer: `offset` is its top-left against the pointer position,
+    // `size` its logical size. nullopt: no drag, or a drag without an icon.
+    std::optional<SurfaceNode> drag_icon() const;
 
     // ---- outputs ----
     std::vector<MonitorSnapshot> monitors() const;

@@ -233,6 +233,11 @@ CursorChanged ServerBackend::cursor() const {
     return impl_->mirror.cursor;
 }
 
+std::optional<SurfaceNode> ServerBackend::drag_icon() const {
+    std::lock_guard<std::mutex> lock(impl_->mirror.m);
+    return impl_->mirror.drag_icon;
+}
+
 // ---------------------------------------------------------------- outputs
 
 std::vector<MonitorSnapshot> ServerBackend::monitors() const {

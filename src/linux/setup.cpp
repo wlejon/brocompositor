@@ -223,7 +223,7 @@ void Server::shutdown() {
                         &new_decoration, &request_activate, &request_cursor_shape, &seat_request_cursor,
                         &seat_request_selection, &seat_request_primary, &seat_request_drag, &seat_start_drag,
                         &output_mgr_apply, &output_mgr_test, &layout_change, &selection_changed, &primary_changed,
-                        &drag_icon_destroy, &new_constraint, &new_virtual_keyboard, &new_virtual_pointer,
+                        &drag_icon_destroy, &drag_icon_commit, &new_constraint, &new_virtual_keyboard, &new_virtual_pointer,
                         &new_shortcuts_inhibitor, &new_idle_inhibitor, &new_text_input, &new_input_method,
                         &im_commit, &im_new_popup, &im_grab_keyboard, &im_destroy, &im_grab_destroy, &new_lock,
                         &lock_new_surface, &lock_unlock, &lock_destroy, &pointer_grab_begin, &keyboard_grab_begin,

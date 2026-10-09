@@ -28,6 +28,9 @@
 //          --viewport WxH / --crop x,y,w,h (wp_viewporter destination / source)
 //          --copy TEXT (wl_data_device selection on keyboard focus: "copied",
 //          "cancelled") / --paste (prints "paste <text>" per selection)
+//          --drag TEXT (a button press starts a drag of TEXT with a 16x8
+//          icon offset -4,-3: "drag-started", then "drag-dropped",
+//          "drag-finished" or "drag-cancelled")
 //          --csd (request client-side decorations; "decoration server|client")
 #include "linux/wl_client_buffers.h"
 
@@ -66,6 +69,9 @@ struct App {
     wl_data_device_manager* ddm = nullptr;
     wl_data_device* data_device = nullptr;
     std::string copy_text;  // --copy: set the selection on keyboard focus
+    std::string drag_text;  // --drag: start a drag (with an icon) on a button press
+    bctest::BufferPool icon_pool;
+    wl_surface* drag_icon = nullptr;
     bool paste = false;     // --paste: print each selection's text/plain
     bool copied = false;
     bool csd = false;  // --csd: ask xdg-decoration for client-side
@@ -236,6 +242,51 @@ const wl_data_device_listener data_device_listener = {
     },
 };
 
+// ---------------------------------------------------------------- drag (wl_data_device.start_drag)
+
+const wl_data_source_listener drag_source_listener = {
+    [](void*, wl_data_source*, const char*) {},
+    [](void* data, wl_data_source*, const char*, int32_t fd) {
+        auto& a = *static_cast<App*>(data);
+        ssize_t r = write(fd, a.drag_text.data(), a.drag_text.size());
+        (void)r;
+        close(fd);
+    },
+    [](void* data, wl_data_source* s) {
+        auto& a = *static_cast<App*>(data);
+        out("drag-cancelled");
+        wl_data_source_destroy(s);
+        if (a.drag_icon) wl_surface_destroy(a.drag_icon);
+        a.drag_icon = nullptr;
+    },
+    [](void*, wl_data_source*) { out("drag-dropped"); },
+    [](void* data, wl_data_source* s) {
+        auto& a = *static_cast<App*>(data);
+        out("drag-finished");
+        wl_data_source_destroy(s);
+        if (a.drag_icon) wl_surface_destroy(a.drag_icon);
+        a.drag_icon = nullptr;
+    },
+    [](void*, wl_data_source*, uint32_t) {},
+};
+
+// A press starts the drag: a 16x8 icon held 4,3 up-left of its corner (its
+// pixel (4,3) under the pointer), offset by wl_surface.offset.
+void on_button_press(App& a, uint32_t serial) {
+    if (a.drag_text.empty() || !a.ddm || !a.data_device || a.drag_icon) return;
+    wl_data_source* s = wl_data_device_manager_create_data_source(a.ddm);
+    wl_data_source_add_listener(s, &drag_source_listener, &a);
+    wl_data_source_offer(s, "text/plain");
+    wl_data_source_set_actions(s, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
+    a.drag_icon = wl_compositor_create_surface(a.compositor);
+    wl_data_device_start_drag(a.data_device, s, a.surface, a.drag_icon, serial);
+    wl_surface_offset(a.drag_icon, -4, -3);
+    wl_surface_attach(a.drag_icon, a.icon_pool.shm(a.shm, 16, 8, 0xFF00FF00), 0, 0);
+    wl_surface_damage(a.drag_icon, 0, 0, 16, 8);
+    wl_surface_commit(a.drag_icon);
+    out("drag-started");
+}
+
 void on_keyboard_enter(App& a, uint32_t serial) {
     out("kbenter");
     if (a.copy_text.empty() || a.copied || !a.ddm || !a.data_device) return;
@@ -271,7 +322,10 @@ const wl_pointer_listener pointer_listener = {
     [](void*, wl_pointer*, uint32_t, wl_fixed_t x, wl_fixed_t y) {
         out("motion %d %d", wl_fixed_to_int(x), wl_fixed_to_int(y));
     },
-    [](void*, wl_pointer*, uint32_t, uint32_t, uint32_t button, uint32_t state) { out("button %u %u", button, state); },
+    [](void* data, wl_pointer*, uint32_t serial, uint32_t, uint32_t button, uint32_t state) {
+        out("button %u %u", button, state);
+        if (state == WL_POINTER_BUTTON_STATE_PRESSED) on_button_press(*static_cast<App*>(data), serial);
+    },
     [](void*, wl_pointer*, uint32_t, uint32_t axis, wl_fixed_t v) { out("axis %u %d", axis, wl_fixed_to_int(v)); },
     [](void*, wl_pointer*) {},
     [](void*, wl_pointer*, uint32_t) {},
@@ -293,7 +347,7 @@ const wl_seat_listener seat_listener = {
         }
         if ((caps & WL_SEAT_CAPABILITY_POINTER) && !ptr) {
             ptr = true;
-            wl_pointer_add_listener(wl_seat_get_pointer(seat), &pointer_listener, nullptr);
+            wl_pointer_add_listener(wl_seat_get_pointer(seat), &pointer_listener, data);
         }
     },
     [](void*, wl_seat*, const char*) {},
@@ -470,6 +524,7 @@ int main(int argc, char** argv) {
         else if (k == "--crop")
             std::sscanf(next().c_str(), "%lf,%lf,%lf,%lf", &a.crop[0], &a.crop[1], &a.crop[2], &a.crop[3]);
         else if (k == "--copy") a.copy_text = next();
+        else if (k == "--drag") a.drag_text = next();
         else if (k == "--paste") a.paste = true;
         else if (k == "--csd") a.csd = true;
         else if (k == "--dmabuf") a.use_dmabuf = true;
@@ -495,7 +550,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (a.ddm && a.seat && (a.paste || !a.copy_text.empty())) {
+    if (a.ddm && a.seat && (a.paste || !a.copy_text.empty() || !a.drag_text.empty())) {
         a.data_device = wl_data_device_manager_get_data_device(a.ddm, a.seat);
         wl_data_device_add_listener(a.data_device, &data_device_listener, &a);
     }

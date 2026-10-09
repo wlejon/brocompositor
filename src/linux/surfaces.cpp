@@ -69,7 +69,7 @@ void Server::on_new_surface(wlr_surface* surface) {
             mirror.surfaces.erase(raw->id);
         }
         surface_ids.erase(raw->id);
-        if (drag_icon == raw->surface) drag_icon = nullptr;
+        if (drag_icon == raw->surface) clear_drag_icon();
         if (text_focus == raw->surface) text_focus = nullptr;
         dirty_roots.erase(raw->surface);
         mark_all_trees_dirty();

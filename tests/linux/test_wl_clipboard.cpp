@@ -1,7 +1,8 @@
 // Clipboard through the server role: wl-clipboard (data-control) sets and
 // reads the regular and primary selections, the host sees SelectionChanged
 // with the offered MIME types, a replaced source is cancelled (its wl-copy
-// exits), and clearing empties the selection.
+// exits), and clearing empties the selection. A client's drag shows its
+// icon to the host (drag_icon), at its offset against the pointer.
 #include "linux/wl_harness.h"
 #include "printers.h"
 
@@ -32,9 +33,12 @@ bool has_selection_event(Host& host, bool primary, const std::string& mime) {
     return false;
 }
 
+void drag_icon(Host& host);
+
 void run(Host& host) {
     if (which("wl-copy").empty() || which("wl-paste").empty()) {
         std::printf("SKIP: wl-clipboard not installed\n");
+        drag_icon(host);
         return;
     }
     // Regular selection round trip.
@@ -95,6 +99,51 @@ void run(Host& host) {
     CHECK(paster->wait_line("paste to data device", 5000));
     CHECK(copier->wait_line("cancelled", 5000));
     c4->kill_now();
+    copier->kill_now();
+    paster->kill_now();
+
+    drag_icon(host);
+}
+
+// A drag a client starts (wl_data_device.start_drag) with an icon: the host
+// hears DragIconChanged and drag_icon() gives the icon's surface, its offset
+// against the pointer (the client's wl_surface.offset) and size, to draw at
+// the pointer; the release over no taker cancels the drag, and the icon goes.
+void drag_icon(Host& host) {
+    constexpr uint32_t kBtnLeft = 0x110;
+    auto d = Child::spawn({BC_WL_CLIENT, "--app-id", "dragger", "--drag", "dragged text"}, host.client_env());
+    REQUIRE(d);
+    REQUIRE(d->wait_line("ready", 5000));
+    REQUIRE(host.wait([&] { return host.window_by_app_id("dragger") != kNoWindow; }));
+    const WindowId w = host.window_by_app_id("dragger");
+    Rect f = host.server().query(w)->frame;
+    CHECK(!host.server().drag_icon().has_value());
+    host.server().inject_pointer_warp(f.x + 20, f.y + 20);
+    REQUIRE(d->wait_line("enter 20 20", 5000));
+    host.server().inject_pointer_button(kBtnLeft, true);
+    REQUIRE(d->wait_line("drag-started", 5000));
+    CHECK(host.wait([&] {
+        auto ev = host.server_events_of<DragIconChanged>();
+        return !ev.empty() && ev.back().surface != kNoSurface;
+    }));
+    CHECK(host.wait([&] {
+        auto icon = host.server().drag_icon();
+        return icon && icon->size.width == 16 && icon->size.height == 8;
+    }));
+    if (auto icon = host.server().drag_icon()) {
+        CHECK_EQ(icon->offset.x, -4);
+        CHECK_EQ(icon->offset.y, -3);
+        CHECK(host.server().surface(icon->surface) != nullptr);
+    }
+    host.server().inject_pointer_warp(f.x + 60, f.y + 50);
+    host.server().inject_pointer_button(kBtnLeft, false);
+    CHECK(d->wait_line("drag-cancelled", 5000));
+    CHECK(host.wait([&] { return !host.server().drag_icon().has_value(); }));
+    CHECK(host.wait([&] {
+        auto ev = host.server_events_of<DragIconChanged>();
+        return !ev.empty() && ev.back().surface == kNoSurface;
+    }));
+    d->kill_now();
 }
 
 }  // namespace

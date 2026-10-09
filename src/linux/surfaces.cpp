@@ -4,7 +4,9 @@
 #include "linux/client_surface.h"
 #include "linux/server_impl.h"
 
+#include <algorithm>
 #include <ctime>
+#include <vector>
 
 namespace brocompositor::wl {
 
@@ -85,6 +87,54 @@ void Server::send_frame_done(wlr_surface* surface, int64_t timestamp_ns) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
     }
     wlr_surface_send_frame_done(surface, &ts);
+    if (SurfaceRec* r = rec(surface)) {
+        timespec now{};
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        r->last_frame_done_ns = int64_t(now.tv_sec) * 1000000000 + now.tv_nsec;
+    }
+}
+
+// Frame callbacks are answered when the host draws a surface. One it does
+// not draw (hidden, minimized, on another workspace, covered by a
+// fullscreen window) would wait for its callback for ever, and a client
+// blocked on it (a Vulkan or EGL FIFO swapchain in its next present, SDL's
+// render loop) stops dead: no input handled, no protocol answered, no
+// audio or network pumped by that thread. So a surface whose callback has
+// gone unanswered for kFrameKeepaliveMs is answered anyway: about once a
+// second, a throttle and not a stop, whatever the client is.
+namespace {
+constexpr int kFrameKeepaliveMs = 1000;
+}
+
+void Server::init_frame_keepalive() {
+    if (!loop || frame_keepalive_timer) return;
+    frame_keepalive_timer = wl_event_loop_add_timer(
+        loop,
+        [](void* data) {
+            auto* s = static_cast<Server*>(data);
+            s->frame_keepalive();
+            wl_event_source_timer_update(s->frame_keepalive_timer, kFrameKeepaliveMs / 4);
+            return 0;
+        },
+        this);
+    if (frame_keepalive_timer) wl_event_source_timer_update(frame_keepalive_timer, kFrameKeepaliveMs / 4);
+}
+
+void Server::frame_keepalive() {
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    const int64_t now_ns = int64_t(now.tv_sec) * 1000000000 + now.tv_nsec;
+    const int64_t stale_ns = int64_t(kFrameKeepaliveMs) * 1000000;
+    std::vector<wlr_surface*> due;
+    for (auto& [surface, r] : surfaces) {
+        if (wl_list_empty(&surface->current.frame_callback_list)) {
+            // Nothing asked: the clock starts when something does.
+            r->last_frame_done_ns = std::max(r->last_frame_done_ns, now_ns - stale_ns / 2);
+            continue;
+        }
+        if (now_ns - r->last_frame_done_ns >= stale_ns) due.push_back(surface);
+    }
+    for (wlr_surface* s : due) send_frame_done(s, now_ns);
 }
 
 RootRef Server::resolve_root(wlr_surface* surface) {

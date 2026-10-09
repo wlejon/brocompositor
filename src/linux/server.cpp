@@ -437,9 +437,9 @@ void ServerBackend::inject_pointer_motion(double dx, double dy) {
     s->dispatcher->post([=] { s->inject_pointer_motion(dx, dy); });
 }
 
-void ServerBackend::inject_pointer_warp(double x, double y) {
+void ServerBackend::inject_pointer_warp(double x, double y, double dx, double dy) {
     Server* s = impl_.get();
-    s->dispatcher->post([=] { s->inject_pointer_warp(x, y); });
+    s->dispatcher->post([=] { s->inject_pointer_warp(x, y, dx, dy); });
 }
 
 void ServerBackend::inject_pointer_button(uint32_t button, bool pressed) {

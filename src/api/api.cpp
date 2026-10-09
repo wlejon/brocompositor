@@ -182,6 +182,10 @@ Value windowSnapshotToJs(const brocompositor::WindowSnapshot& snap, bool focused
     b.set("fullscreen", snap.fullscreen);
     b.set("resizable", snap.resizable);
     b.set("decorated", snap.decorated);
+    // The client's own icon (xdg-toplevel-icon): its theme name, and a
+    // serial that changes with it (0: none); getWindowIcon has the pixels.
+    b.set("iconName", snap.icon_name);
+    b.set("iconSerial", static_cast<double>(snap.icon_serial));
     b.set("floating", floating);
     b.set("tiled", tiled);
     b.set("shown", shown);

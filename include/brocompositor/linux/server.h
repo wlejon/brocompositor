@@ -191,6 +191,13 @@ public:
     virtual void presented_on(MonitorId output, int64_t timestamp_ns) = 0;
     // The same with the flip's vblank counter, refresh and flags.
     virtual void presented_with(const PresentationTime& t) { presented_on(t.output, t.timestamp_ns); }
+    // The same for one acquired frame: its commit's presentation feedback,
+    // not whichever commit is newest by the time the flip lands (a client
+    // that committed again meanwhile would hear about that one too early).
+    virtual void presented_frame(const Frame& frame, const PresentationTime& t) {
+        (void)frame;
+        presented_with(t);
+    }
 };
 
 struct SurfaceHit {
@@ -258,7 +265,19 @@ public:
     // is still set_visible().
     bool set_window_minimized(WindowId id, bool minimized);
     std::vector<SurfaceNode> window_surfaces(WindowId id) const;
+    // The icon the window's client set (xdg-toplevel-icon), the image
+    // closest to `size` px (the largest for 0); nullopt when it set none.
+    // An icon given only by name has size 0 and no pixels.
+    std::optional<WindowIcon> window_icon(WindowId id, int32_t size = 0) const;
     std::optional<SurfaceHit> hit_test(WindowId id, double wx, double wy) const;  // frame-relative
+
+    // ---- xdg-activation ----
+    // A token for a process the host launches (passed to it as
+    // XDG_ACTIVATION_TOKEN / DESKTOP_STARTUP_ID): the window it activates
+    // with it is raised and focused (WindowRequest Activate), as if the user
+    // had asked for it. `app_id` may be empty. "" when the server has no
+    // xdg-activation. Tokens expire unused after wlroots' timeout (30 s).
+    std::string create_activation_token(const std::string& app_id = "");
 
     // ---- XWayland ----
     // DISPLAY for X11 clients ("" when XWayland is off or failed).
@@ -360,7 +379,11 @@ public:
     // They feed the same path as real devices (server_events()).
     void inject_key(uint32_t keycode, bool pressed);
     void inject_pointer_motion(double dx, double dy);
-    void inject_pointer_warp(double x, double y);
+    // A host that moves the pointer itself (it owns the devices) puts it at
+    // x, y and passes the device's delta: that reaches the pointer-focused
+    // client as relative motion (zwp_relative_pointer_v1). Under a lock the
+    // host keeps the pointer where it is and passes the delta alone.
+    void inject_pointer_warp(double x, double y, double dx = 0, double dy = 0);
     void inject_pointer_button(uint32_t button, bool pressed);
     void inject_pointer_axis(uint32_t orientation, double delta, int32_t discrete);  // discrete: value120
     // Virtual touchscreen spanning the layout (x, y in layout space).

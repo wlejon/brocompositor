@@ -255,7 +255,21 @@ if(BROCOMPOSITOR_WITH_WAYLAND)
     bc_wl_protocol(${_wp}/staging/ext-image-capture-source/ext-image-capture-source-v1.xml
         ext-image-capture-source-v1)
     bc_wl_protocol(${_wp}/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml ext-image-copy-capture-v1)
+    # xdg-toplevel-icon arrived in wayland-protocols 1.37; without it the
+    # server simply offers no icon global.
+    set(_bc_toplevel_icon_xml ${_wp}/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml)
+    if(EXISTS ${_bc_toplevel_icon_xml})
+        bc_wl_protocol(${_bc_toplevel_icon_xml} xdg-toplevel-icon-v1)
+        set(BC_HAVE_TOPLEVEL_ICON ON)
+    endif()
     list(REMOVE_ITEM BC_PROTO_SOURCES ${_bc_proto_before})
+    if(BC_HAVE_TOPLEVEL_ICON)
+        # Its set_icon names an xdg_toplevel, whose interface wlroots does not
+        # export: the server carries xdg-shell's interface code (the client
+        # library links the server's, so it is there once for both).
+        list(REMOVE_ITEM _bc_proto_before ${BC_PROTO_DIR}/xdg-shell-protocol.c)
+        list(APPEND BC_PROTO_SOURCES ${BC_PROTO_DIR}/xdg-shell-protocol.c)
+    endif()
     set(BC_SERVER_PROTO_SOURCES ${BC_PROTO_SOURCES})
     set(BC_PROTO_SOURCES ${_bc_proto_before} ${BC_SERVER_PROTO_SOURCES})
 
@@ -299,8 +313,12 @@ if(BROCOMPOSITOR_WITH_WAYLAND)
         src/linux/screencopy.cpp
         src/linux/image_copy_capture.cpp
         src/linux/gamma.cpp
+        src/linux/toplevel_icon.cpp
     )
     add_library(brocompositor::wayland ALIAS brocompositor_wayland)
+    if(BC_HAVE_TOPLEVEL_ICON)
+        target_compile_definitions(brocompositor_wayland PRIVATE BC_HAVE_TOPLEVEL_ICON=1)
+    endif()
     add_dependencies(brocompositor_wayland brocompositor_wl_protocols brocompositor_wl_server_protocols)
     target_include_directories(brocompositor_wayland PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${BC_PROTO_DIR})
     target_compile_definitions(brocompositor_wayland PRIVATE WLR_USE_UNSTABLE)

@@ -6,6 +6,8 @@
 
 #include <unistd.h>
 
+#include <cstring>
+
 namespace brocompositor::wl {
 
 struct ServerBackend::Impl : Server {};
@@ -13,6 +15,20 @@ struct ServerBackend::Impl : Server {};
 bool ServerBackend::set_window_minimized(WindowId id, bool minimized) {
     Server* s = impl_.get();
     return s->dispatcher->call([=] { return s->set_window_minimized(id, minimized); });
+}
+
+std::string ServerBackend::create_activation_token(const std::string& app_id) {
+    Server* s = impl_.get();
+    return s->dispatcher->call([s, app_id]() -> std::string {
+        if (!s->activation) return {};
+        // No seat or serial: wlroots then takes the token on its name alone,
+        // which is what a launch by the host itself wants.
+        wlr_xdg_activation_token_v1* t = wlr_xdg_activation_token_v1_create(s->activation);
+        if (!t) return {};
+        if (!app_id.empty()) t->app_id = strdup(app_id.c_str());
+        const char* name = wlr_xdg_activation_token_v1_get_name(t);
+        return name ? std::string(name) : std::string();
+    });
 }
 
 std::string ServerBackend::xwayland_display() const {

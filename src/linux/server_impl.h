@@ -39,12 +39,23 @@ struct SurfaceRec {
     SurfaceId id = kNoSurface;
     std::shared_ptr<ClientSurfaceImpl> source;
     Listener commit, destroy, new_subsurface;
+    int64_t last_frame_done_ns = 0;  // CLOCK_MONOTONIC; when its frame callbacks were last answered
 };
 
 // ---------------------------------------------------------------- windows
 
+// An xdg_toplevel_icon_v1 as set on a toplevel: immutable once set.
+struct IconSet {
+    std::string name;
+    std::vector<WindowIcon> images;  // one per size (largest scale kept)
+};
+
 struct ToplevelRec {
     Server* srv = nullptr;
+    std::shared_ptr<const IconSet> icon;  // xdg-toplevel-icon; null: none
+    uint64_t icon_serial = 0;
+    std::shared_ptr<const IconSet> pending_icon;  // set_icon, applied on the next commit
+    bool icon_pending = false;
     wlr_xdg_toplevel* xdg = nullptr;
     WindowId id = kNoWindow;  // minted on map, 0 while unmapped
     Point pos;                // frame origin in layout space
@@ -114,6 +125,9 @@ struct OutputRec {
     bool use_shm = false;         // fell back to shm images
     uint64_t pending_image = 0;   // committed, waiting for present
     std::map<uint32_t, uint64_t> inflight;  // commit_seq -> image id
+    // commit_seq -> the presentation feedback of the client frames it drew,
+    // sent when that commit is presented (discarded when it is not).
+    std::map<uint32_t, std::vector<wlr_presentation_feedback*>> inflight_feedback;
     // Last successfully committed image. The server holds a lock on it, so it
     // stays out of the host's free list while captures copy from it.
     uint64_t front_image = 0;
@@ -182,6 +196,7 @@ struct RootRef {
 
 struct WindowMirror {
     WindowSnapshot snap;
+    std::shared_ptr<const IconSet> icon;
     bool visible = true;
     bool ssd = false;
     SurfaceId root = kNoSurface;
@@ -295,6 +310,11 @@ struct Server {
     bool outputs_dirty = false;
     wl_event_source* outputs_idle = nullptr;
     std::unordered_map<SurfaceId, wlr_surface*> surface_ids;
+    // Frame callbacks for surfaces nothing draws (hidden, minimized, on
+    // another workspace, covered): see frame_keepalive in surfaces.cpp.
+    wl_event_source* frame_keepalive_timer = nullptr;
+    void init_frame_keepalive();
+    void frame_keepalive();
 
     // ---- XWayland (xwayland.cpp) ----
 #ifdef BC_HAVE_XWAYLAND
@@ -376,6 +396,13 @@ struct Server {
 
     // ---- gamma (gamma.cpp) ----
     wl_global* gamma_global = nullptr;
+
+    // ---- xdg-toplevel-icon (toplevel_icon.cpp) ----
+    wl_global* toplevel_icon_global = nullptr;
+    void init_toplevel_icon();
+    // set_icon on a toplevel (null: back to its default); applied on its next commit.
+    void set_toplevel_icon(wlr_xdg_toplevel* xdg, std::shared_ptr<const IconSet> icon);
+    void apply_toplevel_icon(ToplevelRec& t);
 
     // ---- setup.cpp ----
     bool init(std::string* error);
@@ -475,7 +502,7 @@ struct Server {
     void forget_surface_focus(wlr_surface* surface);
     void inject_key(uint32_t keycode, bool pressed);
     void inject_pointer_motion(double dx, double dy);
-    void inject_pointer_warp(double x, double y);
+    void inject_pointer_warp(double x, double y, double dx, double dy);
     void inject_pointer_button(uint32_t button, bool pressed);
     void inject_pointer_axis(uint32_t orientation, double delta, int32_t discrete);
     void publish_cursor_position();

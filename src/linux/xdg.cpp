@@ -51,6 +51,10 @@ WindowSnapshot Server::snapshot(ToplevelRec& t) {
     s.title = t.xdg->title ? t.xdg->title : "";
     s.app_id = t.xdg->app_id ? t.xdg->app_id : "";
     s.class_name = "xdg_toplevel";
+    if (t.icon) {
+        s.icon_name = t.icon->name;
+        s.icon_serial = t.icon_serial;
+    }
     Size g = geometry_size(t.xdg);
     s.frame = Rect{t.pos.x, t.pos.y, g.width, g.height};
     // Monitor: the output with the largest overlap (else the nearest).
@@ -85,7 +89,10 @@ void Server::publish_window(ToplevelRec& t, uint32_t changes) {
     {
         std::lock_guard<std::mutex> lock(mirror.m);
         auto it = mirror.windows.find(t.id);
-        if (it != mirror.windows.end()) it->second.snap = s;
+        if (it != mirror.windows.end()) {
+            it->second.snap = s;
+            it->second.icon = t.icon;
+        }
     }
     foreign_update(t.foreign.get(), s, t.activated, t.minimized, t.entered);
     if (differs || changes) events.push(WindowChanged{s, changes});
@@ -141,6 +148,7 @@ void Server::on_new_toplevel(wlr_xdg_toplevel* xdg) {
 
     t->commit.connect(&surface->events.commit, [this, t](void*) {
         wlr_xdg_toplevel* x = t->xdg;
+        if (t->icon_pending) apply_toplevel_icon(*t);
         if (x->base->initial_commit) {
             wlr_xdg_toplevel_set_wm_capabilities(x, kAllWmCaps);
             wlr_output* o = output_at(mirror.cursor_x, mirror.cursor_y);

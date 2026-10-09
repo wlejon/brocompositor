@@ -60,8 +60,20 @@ struct WindowSnapshot {
     // negotiated server-side, or an X11 window that leaves its frame to the
     // window manager. Always false for the shell backends (the OS draws).
     bool decorated = false;
+    // The icon the client set (xdg-toplevel-icon on Wayland): a theme icon
+    // name, and a serial that changes whenever the icon does (0: none set).
+    // Its pixels come from the backend (wl::ServerBackend::window_icon).
+    std::string icon_name;
+    uint64_t icon_serial = 0;
 
     bool operator==(const WindowSnapshot&) const = default;
+};
+
+// A window's icon image: square, straight-alpha RGBA8 (stride size * 4).
+struct WindowIcon {
+    std::string name;           // the theme icon name, if the client gave one
+    int32_t size = 0;           // px; 0 when there are only a name
+    std::vector<uint8_t> rgba;
 };
 
 // Bits for WindowChanged::changes.
@@ -70,6 +82,7 @@ inline constexpr uint32_t Geometry = 1u << 0;
 inline constexpr uint32_t Title = 1u << 1;
 inline constexpr uint32_t State = 1u << 2;  // minimized / maximized / fullscreen / decorated
 inline constexpr uint32_t Monitor = 1u << 3;
+inline constexpr uint32_t Icon = 1u << 4;
 }  // namespace change
 
 // A window became manageable: visible, top-level, an application window.

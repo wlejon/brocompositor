@@ -110,6 +110,10 @@ void constraints(Host& host) {
     usleep(100 * 1000);
     CHECK(s.cursor_position() == std::make_pair(double(f.x + 60), double(f.y + 70)));
     CHECK_EQ(c->count("motion "), size_t(0));
+    // A host that owns the devices (bro's shell under DRM) keeps a locked
+    // pointer in place itself and passes the device delta with the warp.
+    s.inject_pointer_warp(f.x + 60, f.y + 70, -4, 7);
+    CHECK(c->wait_line("rel -4 7", 5000));
     // Leaving the surface (a host warp) ends the lock.
     s.inject_pointer_warp(5, 5);
     CHECK(c->wait_line("unlocked", 5000));

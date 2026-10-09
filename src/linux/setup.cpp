@@ -165,6 +165,8 @@ bool Server::init_globals(std::string* error) {
     init_screencopy();
     init_image_copy_capture();
     init_gamma();
+    init_toplevel_icon();
+    init_frame_keepalive();
     new_output.connect(&backend->events.new_output,
                        [this](void* data) { on_new_output(static_cast<wlr_output*>(data)); });
 
@@ -227,7 +229,7 @@ void Server::shutdown() {
                         &lock_new_surface, &lock_unlock, &lock_destroy, &pointer_grab_begin, &keyboard_grab_begin,
                         &touch_grab_begin})
         l->disconnect();
-    for (wl_event_source** src : {&tree_idle, &outputs_idle, &idle_check, &grab_end_idle})
+    for (wl_event_source** src : {&tree_idle, &outputs_idle, &idle_check, &grab_end_idle, &frame_keepalive_timer})
         if (*src) {
             wl_event_source_remove(*src);
             *src = nullptr;

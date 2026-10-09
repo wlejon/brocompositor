@@ -5,6 +5,8 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace brocompositor {
@@ -58,6 +60,17 @@ void setHostFeedsEvents(bool on);
 using PointerSource = std::function<bool(int32_t& x, int32_t& y)>;
 void setPointerSource(PointerSource source);
 
+/// Mints an xdg-activation token for a process the shell launches
+/// (bro.compositor.activationToken): "" when the host cannot.
+using ActivationTokenSource = std::function<std::string(const std::string& appId)>;
+void setActivationTokenSource(ActivationTokenSource source);
+
+/// A window's own icon (the backend's: xdg-toplevel-icon on Wayland), the
+/// image closest to `size` px, for bro.compositor.getWindowIcon; nullopt
+/// when it set none.
+using WindowIconSource = std::function<std::optional<brocompositor::WindowIcon>(WindowId id, int32_t size)>;
+void setWindowIconSource(WindowIconSource source);
+
 } // namespace brocompositor::api
 
 using brocompositor::api::installCompositor;
@@ -70,3 +83,5 @@ using brocompositor::api::getEventQueue;
 using brocompositor::api::setCommandSink;
 using brocompositor::api::setHostFeedsEvents;
 using brocompositor::api::setPointerSource;
+using brocompositor::api::setActivationTokenSource;
+using brocompositor::api::setWindowIconSource;

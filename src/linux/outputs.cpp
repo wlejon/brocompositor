@@ -1,5 +1,6 @@
 // Outputs: discovery, modesetting, the layout, frame pacing and the present
 // path (host-rendered image -> wlr_output commit -> presentation feedback).
+#include "linux/client_surface.h"
 #include "linux/drm_util.h"
 #include "linux/server_impl.h"
 
@@ -124,6 +125,20 @@ void Server::on_new_output(wlr_output* o) {
             p.image_id = it->second;
             out->inflight.erase(out->inflight.begin(), std::next(it));
         }
+        // Client frames drawn by this commit turned to light now; those of
+        // earlier commits never reported were not shown.
+        for (auto f = out->inflight_feedback.begin();
+             f != out->inflight_feedback.end() && f->first <= e->commit_seq;) {
+            for (wlr_presentation_feedback* fb : f->second) {
+                if (f->first == e->commit_seq && e->presented) {
+                    wlr_presentation_event ev{};
+                    wlr_presentation_event_from_output(&ev, e);
+                    wlr_presentation_feedback_send_presented(fb, &ev);
+                }
+                wlr_presentation_feedback_destroy(fb);
+            }
+            f = out->inflight_feedback.erase(f);
+        }
         server_events.push(p);
     });
     out->commit.connect(&o->events.commit, [this](void* data) {
@@ -146,6 +161,9 @@ void Server::on_new_output(wlr_output* o) {
     });
     out->destroy.connect(&o->events.destroy, [this, out](void*) {
         MonitorId id = out->id;
+        for (auto& [seq, fbs] : out->inflight_feedback)
+            for (wlr_presentation_feedback* fb : fbs) wlr_presentation_feedback_destroy(fb);
+        out->inflight_feedback.clear();
         fail_output_waiters(*out);
         gamma_output_gone(*out);
         free_output_images(*out);
@@ -354,12 +372,24 @@ void Server::present(MonitorId id, PresentRequest req) {
             else
                 lock_clean = false;
         }
-    for (wlr_surface* ws : drawn) wlr_presentation_surface_textured_on_output(ws, out->output);
+    // Their newest commits' presentation feedback goes with this output
+    // commit, sent when it is presented (the present listener).
+    std::vector<wlr_presentation_feedback*> feedback;
+    for (wlr_surface* ws : drawn) {
+        auto rec = surfaces.find(ws);
+        if (rec == surfaces.end() || !rec->second->source) continue;
+        if (wlr_presentation_feedback* fb = rec->second->source->take_current_feedback()) feedback.push_back(fb);
+    }
 
     set_image_state(id, req.image_id, SlotState::Scanout);
     bool ok = wlr_output_commit_state(out->output, &st);
     wlr_output_state_finish(&st);
-    if (!ok) return fail();
+    if (!ok) {
+        for (wlr_presentation_feedback* fb : feedback) wlr_presentation_feedback_destroy(fb);
+        return fail();
+    }
+    // The present event names the commit by the sequence it left behind.
+    if (!feedback.empty()) out->inflight_feedback[out->output->commit_seq] = std::move(feedback);
     out->inflight[out->output->commit_seq] = req.image_id;
     set_front_image(*out, req.image_id);
     int64_t t = now_ns();

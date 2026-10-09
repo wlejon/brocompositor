@@ -129,36 +129,87 @@ void ClientSurfaceImpl::presented_on(MonitorId output, int64_t timestamp_ns) {
 }
 
 void ClientSurfaceImpl::presented_with(const PresentationTime& t) {
+    uint64_t seq = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        if (has_current_) seq = sequence_;
+        presenting_.insert(seq);
+    }
     auto self = shared_from_this();
-    dispatcher_->post([self, t] {
-        wlr_surface* s = self->surface_;
-        if (!s) return;
-        Server* srv = self->server_;
-        if (t.output != kNoMonitor) {
-            if (OutputRec* o = srv->output_rec(t.output)) {
-                if (auto* fb = wlr_presentation_surface_sampled(s)) {
-                    int64_t ts = t.timestamp_ns;
-                    if (ts <= 0) {
-                        timespec now{};
-                        clock_gettime(CLOCK_MONOTONIC, &now);
-                        ts = int64_t(now.tv_sec) * 1000000000 + now.tv_nsec;
-                    }
-                    wlr_presentation_event ev{};
-                    ev.output = o->output;
-                    ev.tv_sec = uint64_t(ts / 1000000000);
-                    ev.tv_nsec = uint32_t(ts % 1000000000);
-                    ev.refresh = t.refresh_ns ? t.refresh_ns
-                                 : o->output->refresh ? uint32_t(1000000000000ll / o->output->refresh)
-                                                      : 0;
-                    ev.seq = t.sequence;
-                    ev.flags = t.flags;
-                    wlr_presentation_feedback_send_presented(fb, &ev);
-                    wlr_presentation_feedback_destroy(fb);
-                }
-            }
+    dispatcher_->post([self, seq, t] { self->send_presented(seq, t); });
+}
+
+void ClientSurfaceImpl::presented_frame(const Frame& frame, const PresentationTime& t) {
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        presenting_.insert(frame.sequence);
+    }
+    auto self = shared_from_this();
+    dispatcher_->post([self, seq = frame.sequence, t] { self->send_presented(seq, t); });
+}
+
+void ClientSurfaceImpl::send_presented(uint64_t seq, const PresentationTime& t) {
+    wlr_presentation_feedback* fb = nullptr;
+    std::vector<wlr_presentation_feedback*> drop;
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        presenting_.erase(seq);
+        auto it = feedback_.find(seq);
+        if (it != feedback_.end()) {
+            fb = it->second;
+            feedback_.erase(it);
         }
-        srv->send_frame_done(s, t.timestamp_ns);
-    });
+        prune_feedback_locked(&drop);
+    }
+    for (wlr_presentation_feedback* f : drop) wlr_presentation_feedback_destroy(f);
+    wlr_surface* s = surface_;
+    Server* srv = server_;
+    OutputRec* o = s && fb && t.output != kNoMonitor ? srv->output_rec(t.output) : nullptr;
+    if (o) {
+        int64_t ts = t.timestamp_ns;
+        if (ts <= 0) {
+            timespec now{};
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            ts = int64_t(now.tv_sec) * 1000000000 + now.tv_nsec;
+        }
+        wlr_presentation_event ev{};
+        ev.output = o->output;
+        ev.tv_sec = uint64_t(ts / 1000000000);
+        ev.tv_nsec = uint32_t(ts % 1000000000);
+        ev.refresh = t.refresh_ns ? t.refresh_ns
+                     : o->output->refresh ? uint32_t(1000000000000ll / o->output->refresh)
+                                          : 0;
+        ev.seq = t.sequence;
+        ev.flags = t.flags;
+        wlr_presentation_feedback_send_presented(fb, &ev);
+    }
+    if (fb) wlr_presentation_feedback_destroy(fb);  // without a presented event: discarded
+    if (s) srv->send_frame_done(s, t.timestamp_ns);
+}
+
+void ClientSurfaceImpl::prune_feedback_locked(std::vector<wlr_presentation_feedback*>* drop) {
+    for (auto it = feedback_.begin(); it != feedback_.end();) {
+        const uint64_t seq = it->first;
+        bool keep = (has_current_ && seq == sequence_) || presenting_.count(seq) != 0;
+        for (size_t i = 0; !keep && i < frames_.size(); ++i)
+            keep = frames_[i].frame.sequence == seq && frames_[i].leases != 0;
+        if (keep) {
+            ++it;
+        } else {
+            drop->push_back(it->second);
+            it = feedback_.erase(it);
+        }
+    }
+}
+
+wlr_presentation_feedback* ClientSurfaceImpl::take_current_feedback() {
+    std::lock_guard<std::mutex> lock(m_);
+    if (!has_current_) return nullptr;
+    auto it = feedback_.find(sequence_);
+    if (it == feedback_.end()) return nullptr;
+    wlr_presentation_feedback* fb = it->second;
+    feedback_.erase(it);
+    return fb;
 }
 
 bool ClientSurfaceImpl::closed() const {
@@ -317,6 +368,27 @@ ClientSurfaceImpl::Img* ClientSurfaceImpl::copy_buffer(wlr_buffer* buffer) {
 }
 
 bool ClientSurfaceImpl::on_commit() {
+    // This commit's feedback, taken now so it stays with this commit's frame.
+    wlr_presentation_feedback* fb = surface_ ? wlr_presentation_surface_sampled(surface_) : nullptr;
+    const bool attached = apply_commit();
+    std::vector<wlr_presentation_feedback*> drop;
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        if (fb) {
+            // A commit without a new buffer updates the current frame's.
+            auto [it, fresh] = feedback_.try_emplace(has_current_ ? sequence_ : 0, fb);
+            if (!fresh) {
+                drop.push_back(it->second);
+                it->second = fb;
+            }
+        }
+        prune_feedback_locked(&drop);
+    }
+    for (wlr_presentation_feedback* f : drop) wlr_presentation_feedback_destroy(f);
+    return attached;
+}
+
+bool ClientSurfaceImpl::apply_commit() {
     wlr_surface* s = surface_;
     bool new_buffer = (s->current.committed & WLR_SURFACE_STATE_BUFFER) != 0;
     wlr_buffer* buffer = new_buffer ? s->current.buffer : nullptr;
@@ -410,6 +482,7 @@ bool ClientSurfaceImpl::on_commit() {
 
 void ClientSurfaceImpl::on_destroy() {
     std::vector<wlr_buffer*> unlock;
+    std::vector<wlr_presentation_feedback*> drop;
     {
         std::lock_guard<std::mutex> lock(m_);
         closed_ = true;
@@ -430,13 +503,17 @@ void ClientSurfaceImpl::on_destroy() {
         by_buffer_.clear();
         drop_superseded_frames_locked();
         surface_ = nullptr;
+        for (auto& [seq, fb] : feedback_) drop.push_back(fb);
+        feedback_.clear();
     }
+    for (wlr_presentation_feedback* f : drop) wlr_presentation_feedback_destroy(f);
     for (wlr_buffer* b : unlock)
         if (b) wlr_buffer_unlock(b);
 }
 
 void ClientSurfaceImpl::shutdown() {
     std::vector<wlr_buffer*> unlock;
+    std::vector<wlr_presentation_feedback*> drop;
     {
         std::lock_guard<std::mutex> lock(m_);
         closed_ = true;
@@ -448,7 +525,10 @@ void ClientSurfaceImpl::shutdown() {
             img->buffer = nullptr;
         }
         by_buffer_.clear();
+        for (auto& [seq, fb] : feedback_) drop.push_back(fb);
+        feedback_.clear();
     }
+    for (wlr_presentation_feedback* f : drop) wlr_presentation_feedback_destroy(f);
     for (wlr_buffer* b : unlock)
         if (b) wlr_buffer_unlock(b);
 }

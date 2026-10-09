@@ -363,9 +363,13 @@ void Server::inject_pointer_motion(double dx, double dy) {
     wl_signal_emit_mutable(&vpointer->events.frame, vpointer);
 }
 
-void Server::inject_pointer_warp(double x, double y) {
+void Server::inject_pointer_warp(double x, double y, double dx, double dy) {
+    const uint32_t t = now_msec();
+    if (seat->pointer_state.focused_surface && (dx != 0 || dy != 0))
+        wlr_relative_pointer_manager_v1_send_relative_motion(relative_pointer, seat, uint64_t(t) * 1000, dx, dy, dx,
+                                                             dy);
     warp(x, y);
-    server_events.push(PointerMotion{now_msec(), cursor_x, cursor_y, 0, 0});
+    server_events.push(PointerMotion{t, cursor_x, cursor_y, dx, dy});
     server_events.push(PointerFrame{});
 }
 

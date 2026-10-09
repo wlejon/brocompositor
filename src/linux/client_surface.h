@@ -18,6 +18,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <vector>
 
 namespace brocompositor::wl {
 
@@ -43,10 +45,15 @@ public:
     SurfaceState state() const override;
     void presented_on(MonitorId output, int64_t timestamp_ns) override;
     void presented_with(const PresentationTime& t) override;
+    void presented_frame(const Frame& frame, const PresentationTime& t) override;
 
     // ---- server thread ----
+    // The newest commit's presentation feedback, taken (the output path
+    // sends it when its output commit is presented); null when none.
+    wlr_presentation_feedback* take_current_feedback();
     // Handles a commit; returns true when a new buffer was attached.
     bool on_commit();
+    bool apply_commit();  // on_commit's buffer and frame half
     void on_destroy();
     // Server teardown: drops every buffer lock and buffer listener.
     void shutdown();
@@ -75,6 +82,12 @@ private:
     void unlock_if_idle(uint64_t image_id);
     void drop_superseded_frames_locked();
     bool is_current_locked(uint64_t image_id) const;
+    // Feedback of commits that can no longer be presented (superseded, not
+    // leased, not being presented) moves to `drop` (destroyed: discarded).
+    void prune_feedback_locked(std::vector<wlr_presentation_feedback*>* drop);
+    // Sends presented (or discarded without an output) for `seq`'s feedback,
+    // discarding older unpresentable ones, then the frame callbacks.
+    void send_presented(uint64_t seq, const PresentationTime& t);
 
     Server* server_;
     std::shared_ptr<Dispatcher> dispatcher_;
@@ -86,6 +99,12 @@ private:
     std::map<uint64_t, std::unique_ptr<Img>> images_;
     std::map<wlr_buffer*, uint64_t> by_buffer_;  // server thread only
     std::deque<FrameRec> frames_;  // back() is current (when has_current_)
+    // Presentation feedback taken at each commit, by frame sequence (server
+    // thread only; frame 0 is a commit before any buffer). wlroots keeps one
+    // per surface and hands out whichever is newest when asked, so it is
+    // taken at commit and kept with the frame it belongs to.
+    std::map<uint64_t, wlr_presentation_feedback*> feedback_;
+    std::set<uint64_t> presenting_;  // frames presented_frame() was called for, not yet sent (m_)
     bool has_current_ = false;
     uint64_t sequence_ = 0;
     uint64_t generation_ = 1;

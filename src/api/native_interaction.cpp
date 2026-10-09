@@ -17,6 +17,8 @@ namespace {
 
 std::mutex g_pointer_mu;
 PointerSource g_pointer_source;
+ActivationTokenSource g_token_source;  // g_pointer_mu
+WindowIconSource g_icon_source;        // g_pointer_mu
 
 // What the last tick reported, so events fire on change only.
 uint64_t g_reported_stack_serial = ~uint64_t(0);
@@ -153,6 +155,16 @@ void setPointerSource(PointerSource source) {
     g_pointer_source = std::move(source);
 }
 
+void setActivationTokenSource(ActivationTokenSource source) {
+    std::lock_guard lock(g_pointer_mu);
+    g_token_source = std::move(source);
+}
+
+void setWindowIconSource(WindowIconSource source) {
+    std::lock_guard lock(g_pointer_mu);
+    g_icon_source = std::move(source);
+}
+
 // Fired from tickCompositorAsync: the stacking order and the drag's armed
 // snap, when they changed since the last tick.
 void dispatchInteractionChanges() {
@@ -190,6 +202,52 @@ void dispatchInteractionChanges() {
 
 void installInteractionOnto(Value compObj) {
     ObjectBuilder comp(compObj);
+
+    // ---- launching ----
+    // bro.compositor.activationToken(appId?) -> string | null: an
+    // xdg-activation token for a process the shell is about to start
+    // (XDG_ACTIVATION_TOKEN / DESKTOP_STARTUP_ID in its environment). The
+    // window it activates with it is raised and focused. Null when the host
+    // is not a compositor that can mint one.
+    comp.def("activationToken", 0, [](Value, std::span<const Value> args) -> Value {
+        ArgReader reader(args);
+        const std::string appId = reader.has(0) ? reader.getString(0) : std::string();
+        ActivationTokenSource src;
+        {
+            std::lock_guard lock(g_pointer_mu);
+            src = g_token_source;
+        }
+        const std::string token = src ? src(appId) : std::string();
+        if (token.empty()) return ev::null();
+        return ev::fromUtf8(token);
+    });
+
+    // bro.compositor.getWindowIcon(id, size = 0) -> {name, size, data} | null:
+    // the icon the window's client set (xdg-toplevel-icon), the image
+    // closest to `size` px (the largest for 0) as straight-alpha RGBA in a
+    // Uint8Array of size*size*4 (size 0 and an empty array when the client
+    // named a theme icon only). Null when it set none; a window's
+    // iconSerial changes when its icon does.
+    comp.def("getWindowIcon", 1, [](Value, std::span<const Value> args) -> Value {
+        ArgReader reader(args);
+        if (!reader.has(0)) return ev::null();
+        const WindowId id = reader.getUint64(0);
+        const int32_t size = reader.has(1) ? reader.getInt(1) : 0;
+        WindowIconSource src;
+        {
+            std::lock_guard lock(g_pointer_mu);
+            src = g_icon_source;
+        }
+        std::optional<WindowIcon> icon = src ? src(id, size) : std::nullopt;
+        if (!icon) return ev::null();
+        ev::Persistent data(ev::createTypedArray(ev::elements::Uint8, static_cast<uint32_t>(icon->rgba.size())));
+        ev::fillTypedArray(data.get(), icon->rgba);
+        ObjectBuilder b;
+        b.set("name", icon->name);
+        b.set("size", icon->size);
+        b.set("data", data.get());
+        return b.build();
+    });
 
     // ---- stacking ----
     // bro.compositor.getStacking() -> Array<windowId>, bottom to top

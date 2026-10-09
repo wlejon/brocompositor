@@ -8,8 +8,13 @@
 #include "linux/wl_harness.h"
 #include "printers.h"
 
+#include <cstddef>
 #include <fstream>
+#include <iomanip>
 
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 using namespace brocompositor;
@@ -227,11 +232,65 @@ void gtk_x11(Host& host) {
     if (!t->wait_exit(10000)) t->kill_now();
 }
 
+// An X server listening on a display without a lock file (sddm's Xorg under
+// -displayfd): the first free display gets a listener of ours and no lock,
+// the way that leaves it. The next gets a listener and a stale lock naming a
+// dead process (the lock written for the greeter's Xorg before sddm restarted
+// it). Xwayland must land on neither, and both must come away locked in our
+// name.
+struct UnlockedXDisplay {
+    int display = -1;
+    int fd = -1;
+    std::string lock;
+
+    bool open(int from, bool stale) {
+        for (int d = from; d <= 32; ++d) {
+            const std::string l = "/tmp/.X" + std::to_string(d) + "-lock";
+            if (::access(l.c_str(), F_OK) == 0) continue;
+            sockaddr_un addr{};
+            addr.sun_family = AF_UNIX;
+            const int n = std::snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, "/tmp/.X11-unix/X%d", d);
+            const int s = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+            const auto len = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + n);
+            if (s >= 0 && ::bind(s, reinterpret_cast<sockaddr*>(&addr), len) == 0 && ::listen(s, 4) == 0) {
+                display = d;
+                fd = s;
+                lock = l;
+                if (stale) {
+                    const pid_t child = ::fork();
+                    if (child == 0) ::_exit(0);
+                    ::waitpid(child, nullptr, 0);  // reaped: the pid names no process
+                    std::ofstream(l) << std::setw(10) << child << "\n";
+                }
+                return true;
+            }
+            if (s >= 0) ::close(s);
+        }
+        return false;
+    }
+    ~UnlockedXDisplay() {
+        if (fd >= 0) ::close(fd);
+        if (!lock.empty()) ::unlink(lock.c_str());
+    }
+};
+
+void unlocked_display_check(Host& host, const UnlockedXDisplay& taken) {
+    std::printf("-- an X display served without a lock file\n");
+    CHECK(host.server().xwayland_display() != ":" + std::to_string(taken.display));
+    std::ifstream in(taken.lock);
+    int pid = 0;
+    CHECK(static_cast<bool>(in >> pid));
+    CHECK_EQ(pid, static_cast<int>(::getpid()));
+}
+
 }  // namespace
 
 int main() {
     std::string dir = private_runtime_dir();
     if (dir.empty()) return 1;
+    UnlockedXDisplay taken, staleTaken;
+    const bool haveTaken = taken.open(0, false);
+    const bool haveStale = haveTaken && staleTaken.open(taken.display + 1, true);
     // The test host composites on the CPU and advertises LINEAR dmabufs only;
     // glamor on some drivers (NVIDIA) cannot render into those, so Xwayland
     // (which inherits this environment) uses shm buffers.
@@ -253,6 +312,8 @@ int main() {
     }
     CHECK(!host.server_events_of<XwaylandStatus>().empty() ||
           host.wait([&] { return !host.server_events_of<XwaylandStatus>().empty(); }));
+    if (haveTaken) unlocked_display_check(host, taken);
+    if (haveStale) unlocked_display_check(host, staleTaken);
 #ifdef BC_X11_CLIENT
     scripted(host);
 #else

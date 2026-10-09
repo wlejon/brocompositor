@@ -11,13 +11,95 @@
 // XwaylandMode in server.h for HiDPI).
 #include "linux/server_impl.h"
 
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <cerrno>
 #include <cmath>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace brocompositor::wl {
 
 #ifdef BC_HAVE_XWAYLAND
 
 namespace {
+
+// The pid of the X server listening on display `d` (its abstract socket,
+// where every Linux X server listens), 0 when none is, -1 when one is but
+// its pid cannot be had.
+pid_t x_server_pid(int d) {
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    const int n = std::snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, "/tmp/.X11-unix/X%d", d);
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    const socklen_t len = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + n);
+    pid_t pid = 0;
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), len) == 0) {
+        ucred cred{};
+        socklen_t clen = sizeof(cred);
+        pid = ::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &clen) == 0 && cred.pid > 0 ? cred.pid : -1;
+    }
+    ::close(fd);
+    return pid;
+}
+
+// wlroots picks Xwayland's display by its lock file (/tmp/.X<n>-lock): the
+// first display without one, or with a dead owner, is tried. An X server
+// that listens without a lock file — sddm's Xorg, started with -displayfd,
+// leaves none — makes that try fail ("Failed to bind socket
+// @/tmp/.X11-unix/X0: Address already in use") before wlroots moves on to
+// the next display. Each display some live server listens on without a lock
+// gets the lock it should have had, naming that server, so wlroots (and any
+// other X server) passes over it as taken. A dead owner later makes the lock
+// stale, which every X server already cleans up. A lock left stale by an
+// earlier server on a display a new one now serves (the lock written here for
+// the greeter's Xorg, after sddm restarted it) is replaced the same way:
+// wlroots would remove it and fail on the bind just as without one.
+
+// The pid a lock file names; 0 when it is unreadable.
+pid_t lock_owner(const char* lock) {
+    const int fd = ::open(lock, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    char text[16] = {};
+    const ssize_t n = ::read(fd, text, sizeof(text) - 1);
+    ::close(fd);
+    if (n <= 0) return 0;
+    return static_cast<pid_t>(std::strtol(text, nullptr, 10));
+}
+
+bool alive(pid_t pid) { return pid > 0 && (::kill(pid, 0) == 0 || errno == EPERM); }
+
+void lock_unlocked_x_displays() {
+    for (int d = 0; d <= 32; ++d) {
+        char lock[64];
+        std::snprintf(lock, sizeof(lock), "/tmp/.X%d-lock", d);
+        const bool locked = ::access(lock, F_OK) == 0;
+        if (locked && alive(lock_owner(lock))) continue;  // taken
+        const pid_t pid = x_server_pid(d);
+        if (pid == 0) return;  // free (or a stale lock wlroots will clear): it takes this one
+        if (pid < 0) continue;
+        if (locked && ::unlink(lock) != 0) continue;
+        const int fd = ::open(lock, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444);
+        if (fd < 0) continue;
+        char text[12];
+        std::snprintf(text, sizeof(text), "%10d\n", static_cast<int>(pid));
+        const bool ok = ::write(fd, text, 11) == 11;
+        ::close(fd);
+        if (!ok) {
+            ::unlink(lock);
+            continue;
+        }
+        wlr_log(WLR_INFO, "brocompositor: X display :%d is served by pid %d without a lock file; locked it for them",
+                d, static_cast<int>(pid));
+    }
+}
 
 Rect xframe(const wlr_xwayland_surface* xs) { return Rect{xs->x, xs->y, int32_t(xs->width), int32_t(xs->height)}; }
 
@@ -419,6 +501,7 @@ void on_new_xsurface(Server* s, wlr_xwayland_surface* xs) {
 bool Server::init_xwayland(std::string* error) {
     (void)error;
     if (config.xwayland == XwaylandMode::Off) return true;
+    lock_unlocked_x_displays();
     xwayland = wlr_xwayland_create(display, compositor, config.xwayland == XwaylandMode::Lazy);
     if (!xwayland) {
         // Not fatal: the Wayland session works without X11 clients.

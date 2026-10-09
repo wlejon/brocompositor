@@ -10,6 +10,7 @@
 //   frame <n>                  n-th frame callback
 //   presented <n>              wp_presentation feedback "presented"
 //   key <code> <0|1>           wl_keyboard.key
+//   mods <dep> <latch> <lock>  wl_keyboard.modifiers
 //   kbenter / kbleave          keyboard focus
 //   enter <x> <y> / leave      pointer focus (surface-local)
 //   motion <x> <y>
@@ -256,7 +257,9 @@ const wl_keyboard_listener keyboard_listener = {
     },
     [](void*, wl_keyboard*, uint32_t, wl_surface*) { out("kbleave"); },
     [](void*, wl_keyboard*, uint32_t, uint32_t, uint32_t key, uint32_t state) { out("key %u %u", key, state); },
-    [](void*, wl_keyboard*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {},
+    [](void*, wl_keyboard*, uint32_t, uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t) {
+        out("mods %u %u %u", depressed, latched, locked);
+    },
     [](void*, wl_keyboard*, int32_t, int32_t) {},
 };
 

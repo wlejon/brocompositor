@@ -98,6 +98,25 @@ void scripted(Host& host) {
     type_keys(host, {46});  // KEY_C
     CHECK(a->wait_line("key 46 1", 5000));
     CHECK(b->count("key 46") == 0);
+
+    // A host-read keyboard (keyboard_key without modifiers): the server
+    // tracks the modifiers from the seat's keymap, so Shift and Caps Lock
+    // reach the client after their keys (Shift = 1, Lock = 2 in the default
+    // keymap's mask).
+    host.server().keyboard_key(1, 42, true);  // KEY_LEFTSHIFT
+    CHECK(a->wait_line("key 42 1", 5000));
+    CHECK(a->wait_line("mods 1 0 0", 5000));
+    host.server().keyboard_key(2, 30, true);
+    host.server().keyboard_key(3, 30, false);
+    host.server().keyboard_key(4, 42, false);
+    CHECK(a->wait_line("key 42 0", 5000));
+    CHECK(a->wait_line("mods 0 0 0", 5000));
+    host.server().keyboard_key(5, 58, true);  // KEY_CAPSLOCK
+    host.server().keyboard_key(6, 58, false);
+    CHECK(a->wait_line("mods 0 0 2", 5000));
+    host.server().keyboard_key(7, 58, true);
+    host.server().keyboard_key(8, 58, false);
+    CHECK(host.wait([&] { return a->count("mods 0 0 0") >= 2; }));
 }
 
 // foot: type `echo hi>FILE` + Enter into the shell and check the file.

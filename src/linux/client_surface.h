@@ -42,6 +42,7 @@ public:
     SurfaceId id() const override { return id_; }
     SurfaceState state() const override;
     void presented_on(MonitorId output, int64_t timestamp_ns) override;
+    void presented_with(const PresentationTime& t) override;
 
     // ---- server thread ----
     // Handles a commit; returns true when a new buffer was attached.

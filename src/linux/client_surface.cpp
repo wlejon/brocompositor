@@ -122,25 +122,42 @@ SharedTimeline ClientSurfaceImpl::timeline() const {
 void ClientSurfaceImpl::presented(int64_t timestamp_ns) { presented_on(kNoMonitor, timestamp_ns); }
 
 void ClientSurfaceImpl::presented_on(MonitorId output, int64_t timestamp_ns) {
+    PresentationTime t;
+    t.output = output;
+    t.timestamp_ns = timestamp_ns;
+    presented_with(t);
+}
+
+void ClientSurfaceImpl::presented_with(const PresentationTime& t) {
     auto self = shared_from_this();
-    dispatcher_->post([self, output, timestamp_ns] {
+    dispatcher_->post([self, t] {
         wlr_surface* s = self->surface_;
         if (!s) return;
         Server* srv = self->server_;
-        if (output != kNoMonitor) {
-            if (OutputRec* o = srv->output_rec(output)) {
+        if (t.output != kNoMonitor) {
+            if (OutputRec* o = srv->output_rec(t.output)) {
                 if (auto* fb = wlr_presentation_surface_sampled(s)) {
+                    int64_t ts = t.timestamp_ns;
+                    if (ts <= 0) {
+                        timespec now{};
+                        clock_gettime(CLOCK_MONOTONIC, &now);
+                        ts = int64_t(now.tv_sec) * 1000000000 + now.tv_nsec;
+                    }
                     wlr_presentation_event ev{};
                     ev.output = o->output;
-                    ev.tv_sec = uint64_t(timestamp_ns / 1000000000);
-                    ev.tv_nsec = uint32_t(timestamp_ns % 1000000000);
-                    ev.refresh = o->output->refresh ? uint32_t(1000000000000ll / o->output->refresh) : 0;
+                    ev.tv_sec = uint64_t(ts / 1000000000);
+                    ev.tv_nsec = uint32_t(ts % 1000000000);
+                    ev.refresh = t.refresh_ns ? t.refresh_ns
+                                 : o->output->refresh ? uint32_t(1000000000000ll / o->output->refresh)
+                                                      : 0;
+                    ev.seq = t.sequence;
+                    ev.flags = t.flags;
                     wlr_presentation_feedback_send_presented(fb, &ev);
                     wlr_presentation_feedback_destroy(fb);
                 }
             }
         }
-        srv->send_frame_done(s, timestamp_ns);
+        srv->send_frame_done(s, t.timestamp_ns);
     });
 }
 

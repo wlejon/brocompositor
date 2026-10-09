@@ -402,6 +402,30 @@ bool Server::place_xdg(ToplevelRec& tr, const Rect& frame) {
 void Server::set_xdg_visible(ToplevelRec& t, bool visible) {
     t.visible = visible;
     if (t.xdg->base->client->shell->version >= 6) wlr_xdg_toplevel_set_suspended(t.xdg, !visible);
+    if (!visible) {
+        // A hidden window gets no more frame callbacks, and a Vulkan FIFO
+        // swapchain waits in its next present for the one it has asked for,
+        // never reading the suspended state. That callback is answered once,
+        // from an idle source added after the configure's (wlroots sends the
+        // configure from idle too), so the client has the suspended state in
+        // hand when its present returns and can stop presenting.
+        struct Pending {
+            Server* srv;
+            wlr_xdg_toplevel* xdg;
+        };
+        wl_event_loop_add_idle(
+            wl_display_get_event_loop(display),
+            [](void* data) {
+                std::unique_ptr<Pending> p(static_cast<Pending*>(data));
+                auto it = p->srv->toplevels.find(p->xdg);
+                if (it == p->srv->toplevels.end() || it->second->visible) return;
+                wlr_xdg_surface_for_each_surface(
+                    p->xdg->base,
+                    [](wlr_surface* s, int, int, void* srv) { static_cast<Server*>(srv)->send_frame_done(s, 0); },
+                    p->srv);
+            },
+            new Pending{this, t.xdg});
+    }
 }
 
 }  // namespace brocompositor::wl

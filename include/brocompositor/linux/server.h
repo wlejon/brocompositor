@@ -170,6 +170,18 @@ struct SurfaceState {
 // overwritten while the host samples it. Frame::sync_fd (when not kNoFd) is
 // the buffer's implicit write fence exported as a sync_file: GPU-wait it
 // before sampling. presented() sends the surface's frame callbacks.
+// When and how a frame that showed a surface reached the screen, for its
+// wp_presentation feedback: the host's flip (CLOCK_MONOTONIC), the output's
+// vblank counter and refresh period, and presentation_flags-style bits
+// (1 vsync, 2 hw clock, 4 hw completion, 8 zero copy).
+struct PresentationTime {
+    MonitorId output = kNoMonitor;
+    int64_t timestamp_ns = 0;  // 0: now
+    uint64_t sequence = 0;
+    uint32_t refresh_ns = 0;   // 0: the output's nominal refresh
+    uint32_t flags = 0;
+};
+
 class ClientSurface : public SurfaceSource {
 public:
     virtual SurfaceId id() const = 0;
@@ -177,6 +189,8 @@ public:
     // Sends frame callbacks and presentation feedback as presented on
     // `output` (kNoMonitor: frame callbacks only).
     virtual void presented_on(MonitorId output, int64_t timestamp_ns) = 0;
+    // The same with the flip's vblank counter, refresh and flags.
+    virtual void presented_with(const PresentationTime& t) { presented_on(t.output, t.timestamp_ns); }
 };
 
 struct SurfaceHit {
@@ -293,6 +307,11 @@ public:
     // Sends the key to the focused surface, then `modifiers_after` (from the
     // KeyboardKey event) when it changed.
     void keyboard_key(uint32_t time_msec, uint32_t keycode, bool pressed, const KeyboardModifiers& modifiers_after);
+    // A key from a keyboard the host reads itself (libinput, injected input)
+    // rather than one wlroots owns: the modifiers that follow it come from
+    // the seat's own keymap, tracked across these calls, so Shift, Ctrl, the
+    // locks and the layout group reach clients without the host running xkb.
+    void keyboard_key(uint32_t time_msec, uint32_t keycode, bool pressed);
     void keyboard_modifiers(const KeyboardModifiers& modifiers);
     void warp_cursor(double x, double y);
     std::pair<double, double> cursor_position() const;

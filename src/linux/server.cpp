@@ -378,6 +378,36 @@ void ServerBackend::keyboard_key(uint32_t time_msec, uint32_t keycode, bool pres
     });
 }
 
+void ServerBackend::keyboard_key(uint32_t time_msec, uint32_t keycode, bool pressed) {
+    Server* s = impl_.get();
+    s->dispatcher->post([=] {
+        if (s->routed_client_input_refused(time_msec, keycode, pressed, false)) return;
+        // The host keyboard's keys are interpreted with the virtual keyboard's
+        // keymap: make it the seat's (a virtual-keyboard-v1 client may have
+        // switched the seat to its own) so clients hold that keymap.
+        KeyboardRec* host = nullptr;
+        for (auto& k : s->keyboards)
+            if (k->keyboard == s->vkeyboard) host = k.get();
+        if (s->vkeyboard && wlr_seat_get_keyboard(s->seat) != s->vkeyboard)
+            wlr_seat_set_keyboard(s->seat, s->vkeyboard);
+        KeyboardModifiers after = s->sent_modifiers;
+        if (host && host->shadow) {
+            xkb_state_update_key(host->shadow, keycode + 8, pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
+            after.depressed = xkb_state_serialize_mods(host->shadow, XKB_STATE_MODS_DEPRESSED);
+            after.latched = xkb_state_serialize_mods(host->shadow, XKB_STATE_MODS_LATCHED);
+            after.locked = xkb_state_serialize_mods(host->shadow, XKB_STATE_MODS_LOCKED);
+            after.group = xkb_state_serialize_layout(host->shadow, XKB_STATE_LAYOUT_EFFECTIVE);
+        }
+        if (s->im_grab_key(time_msec, keycode, pressed)) {
+            s->im_grab_modifiers(after);
+            return;
+        }
+        wlr_seat_keyboard_notify_key(s->seat, time_msec, keycode,
+                                     pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+        s->send_modifiers(after);
+    });
+}
+
 void ServerBackend::keyboard_modifiers(const KeyboardModifiers& modifiers) {
     Server* s = impl_.get();
     s->dispatcher->post([=] {

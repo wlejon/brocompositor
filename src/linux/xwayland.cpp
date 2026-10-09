@@ -83,7 +83,10 @@ void lock_unlocked_x_displays() {
         const bool locked = ::access(lock, F_OK) == 0;
         if (locked && alive(lock_owner(lock))) continue;  // taken
         const pid_t pid = x_server_pid(d);
-        if (pid == 0) return;  // free (or a stale lock wlroots will clear): it takes this one
+        // Free (or a stale lock wlroots will clear). The scan goes on past it:
+        // a display taken in between (another Xwayland exiting as this one
+        // starts) leaves the next free one further up.
+        if (pid == 0) continue;
         if (pid < 0) continue;
         if (locked && ::unlink(lock) != 0) continue;
         const int fd = ::open(lock, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444);

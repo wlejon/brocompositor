@@ -102,7 +102,7 @@ brocompositor_warnings(brocompositor_shell_common)
 # configure. The pin is declared here; it is added here on Windows and macOS,
 # and further down on Linux for the test only.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
-bro_dependency(brodisplays GITHUB wlejon/brodisplays REF 8f1bb8b0d2c8c580b5a71d0d34b4b580ed9b2a47 PIN_ONLY)
+bro_dependency(brodisplays GITHUB wlejon/brodisplays PIN_ONLY)
 if(WIN32 OR APPLE)
     bro_dependency(brodisplays OPTIONS BRODISPLAYS_BUILD_TESTS=OFF)
 endif()
@@ -402,7 +402,7 @@ if(BROCOMPOSITOR_ENABLE_API)
     # bronze (with brass, its code generator) through cmake/bro_deps.cmake: an
     # outer project's target, else ../bronze beside the top-level project, else
     # the pinned commit, fetched at configure.
-    bro_dependency(bronze GITHUB wlejon/bronze REF 15ce4cf5fc25d8afe03882985ae95adcba46a6a9 TARGET bronze_runtime_shared
+    bro_dependency(bronze GITHUB wlejon/bronze TARGET bronze_runtime_shared
                    OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
 
     add_subdirectory(src/api)

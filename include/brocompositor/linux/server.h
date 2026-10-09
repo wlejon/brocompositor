@@ -39,6 +39,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace brocompositor::wl {
@@ -298,6 +299,28 @@ public:
     // the pointer: `offset` is its top-left against the pointer position,
     // `size` its logical size. nullopt: no drag, or a drag without an icon.
     std::optional<SurfaceNode> drag_icon() const;
+
+    // ---- the host's own drags ----
+    // A drag whose source is the host's own UI (a page in the shell): clients
+    // under the pointer see an ordinary wl_data_device drag offering `data`.
+    // It starts where the pointer is, with `button` held (the host's press
+    // that began it, which the seat never saw, is handed to the seat now).
+    // From then on the pointer is the drag's: pointer_route() enters a
+    // client's surface as the drop target (kNoSurface: over none, e.g. the
+    // host's own UI), and pointer_button()'s release of `button` drops on the
+    // target if it accepted, else ends the drag. The source draws no icon;
+    // the host draws its own. The end is a HostDragEnded server event with
+    // the id this returns; 0 when a drag is already under way (or `data` is
+    // empty). A new host drag ends one still waiting on its target's finish.
+    struct HostDrag {
+        // MIME type and bytes, in the order of preference.
+        std::vector<std::pair<std::string, std::string>> data;
+        uint32_t actions = 1;     // dnd_action bits the host allows: 1 copy, 2 move, 4 ask
+        uint32_t button = 0x110;  // BTN_LEFT
+    };
+    uint64_t start_host_drag(HostDrag drag);
+    // Ends the host's drag without a drop (a HostDragEnded follows).
+    void cancel_host_drag();
 
     // ---- outputs ----
     std::vector<MonitorSnapshot> monitors() const;

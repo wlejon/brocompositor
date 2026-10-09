@@ -21,24 +21,8 @@ bc_test(test_event_queue SOURCES core/test_event_queue.cpp LIBS brocompositor_co
 bc_test(test_shell_common SOURCES core/test_shell_common.cpp LIBS brocompositor_shell_common)
 
 if(TARGET brocompositor_wayland)
-    # The scripted Wayland client the server tests drive (plus real
-    # third-party clients when installed: weston demos, foot, wl-clipboard,
-    # wlr-randr, GTK).
-    add_executable(bc_wl_client linux/wl_client.cpp linux/wl_client_buffers.cpp)
-    target_include_directories(bc_wl_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(bc_wl_client PRIVATE brocompositor_wl_protocols PkgConfig::BC_WLR)
-    brocompositor_warnings(bc_wl_client)
-
-    # Clients for the desktop-session protocols: newer input protocols on a
-    # window, and the session roles (input method, lock screen, toplevel
-    # list, image copy capture).
-    add_executable(bc_wl_input_client linux/wl_input_client.cpp linux/wl_client_buffers.cpp)
-    add_executable(bc_wl_session_client linux/wl_session_client.cpp)
-    foreach(c bc_wl_input_client bc_wl_session_client)
-        target_include_directories(${c} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-        target_link_libraries(${c} PRIVATE brocompositor_wl_protocols PkgConfig::BC_WLR)
-        brocompositor_warnings(${c})
-    endforeach()
+    # The scripted Wayland clients the server tests drive.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/linux/clients.cmake)
 
     add_library(bc_wl_harness STATIC linux/wl_harness.cpp linux/wl_harness_desktop.cpp linux/child.cpp)
     target_include_directories(bc_wl_harness PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -31,6 +31,15 @@
 //          --drag TEXT (a button press starts a drag of TEXT with a 16x8
 //          icon offset -4,-3: "drag-started", then "drag-dropped",
 //          "drag-finished" or "drag-cancelled")
+//          --drop (take drags: accepts text/plain with copy or move, preferring
+//          copy; "drag-enter <x> <y>", "drag-motion <x> <y>", "drag-leave",
+//          "drag-action <n>", then "dropped <text>" once it has read it and
+//          finished)
+//          --cursor WxH:AARRGGBB:HX,HY (on pointer enter, a solid WxH image
+//          as the pointer, hotspot HX,HY: "cursor-set"); the stdin command
+//          "cursor W H AARRGGBB DX DY" gives that surface a new WxH buffer
+//          attached at DX,DY (wl_surface.offset), moving the hotspot by
+//          -DX,-DY: "cursor-updated"
 //          --csd (request client-side decorations; "decoration server|client")
 #include "linux/wl_client_buffers.h"
 
@@ -73,6 +82,14 @@ struct App {
     bctest::BufferPool icon_pool;
     wl_surface* drag_icon = nullptr;
     bool paste = false;     // --paste: print each selection's text/plain
+    bool drop = false;      // --drop: take drags
+    wl_data_offer* drag_offer = nullptr;  // the drag over the surface (--drop)
+    // --cursor: the pointer's image while it is over the surface.
+    int cursor_w = 0, cursor_h = 0, cursor_hx = 0, cursor_hy = 0;
+    uint32_t cursor_color = 0;
+    wl_pointer* pointer = nullptr;
+    wl_surface* cursor = nullptr;
+    bctest::BufferPool cursor_pool;
     bool copied = false;
     bool csd = false;  // --csd: ask xdg-decoration for client-side
     int vp_w = 0, vp_h = 0;                  // --viewport destination
@@ -202,21 +219,68 @@ const wl_data_source_listener source_listener = {
     [](void*, wl_data_source*, uint32_t) {},
 };
 
-// The selection's offers announce their types before the selection event.
+App* g_app = nullptr;  // for the offers' listener, whose user data is their text/plain mark
+
+// The selection's offers announce their types before the selection event (a
+// drag's before its enter).
 const wl_data_offer_listener offer_listener = {
     [](void*, wl_data_offer* o, const char* mime) {
         if (std::strcmp(mime, "text/plain") == 0) wl_proxy_set_user_data(reinterpret_cast<wl_proxy*>(o), o);
     },
     [](void*, wl_data_offer*, uint32_t) {},
-    [](void*, wl_data_offer*, uint32_t) {},
+    [](void*, wl_data_offer* o, uint32_t action) {
+        if (g_app && g_app->drop && o == g_app->drag_offer) out("drag-action %u", action);
+    },
 };
+
+std::string read_offer(App& a, wl_data_offer* o, const char* mime) {
+    std::string got;
+    int p[2];
+    if (pipe(p) != 0) return got;
+    wl_data_offer_receive(o, mime, p[1]);
+    close(p[1]);
+    wl_display_flush(a.display);
+    char buf[256];
+    ssize_t n;
+    while ((n = read(p[0], buf, sizeof buf)) > 0) got.append(buf, size_t(n));
+    close(p[0]);
+    return got;
+}
 
 const wl_data_device_listener data_device_listener = {
     [](void*, wl_data_device*, wl_data_offer* o) { wl_data_offer_add_listener(o, &offer_listener, nullptr); },
-    [](void*, wl_data_device*, uint32_t, wl_surface*, wl_fixed_t, wl_fixed_t, wl_data_offer*) {},
-    [](void*, wl_data_device*) {},
-    [](void*, wl_data_device*, uint32_t, wl_fixed_t, wl_fixed_t) {},
-    [](void*, wl_data_device*) {},
+    // --drop: a drag came over the surface; take its text, by copy or move.
+    [](void* data, wl_data_device*, uint32_t serial, wl_surface*, wl_fixed_t x, wl_fixed_t y, wl_data_offer* o) {
+        auto& a = *static_cast<App*>(data);
+        if (!a.drop || !o) return;
+        a.drag_offer = o;
+        const bool text = wl_proxy_get_user_data(reinterpret_cast<wl_proxy*>(o)) == o;
+        wl_data_offer_accept(o, serial, text ? "text/plain" : nullptr);
+        wl_data_offer_set_actions(o, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY | WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE,
+                                  WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
+        out("drag-enter %d %d", wl_fixed_to_int(x), wl_fixed_to_int(y));
+    },
+    [](void* data, wl_data_device*) {
+        auto& a = *static_cast<App*>(data);
+        if (!a.drop || !a.drag_offer) return;
+        wl_data_offer_destroy(a.drag_offer);
+        a.drag_offer = nullptr;
+        out("drag-leave");
+    },
+    [](void* data, wl_data_device*, uint32_t, wl_fixed_t x, wl_fixed_t y) {
+        auto& a = *static_cast<App*>(data);
+        if (a.drop && a.drag_offer) out("drag-motion %d %d", wl_fixed_to_int(x), wl_fixed_to_int(y));
+    },
+    [](void* data, wl_data_device*) {
+        auto& a = *static_cast<App*>(data);
+        if (!a.drop || !a.drag_offer) return;
+        wl_data_offer* o = a.drag_offer;
+        a.drag_offer = nullptr;
+        const std::string got = read_offer(a, o, "text/plain");
+        wl_data_offer_finish(o);
+        wl_data_offer_destroy(o);
+        out("dropped %s", got.c_str());
+    },
     [](void* data, wl_data_device*, wl_data_offer* o) {
         auto& a = *static_cast<App*>(data);
         if (!o) {
@@ -224,20 +288,7 @@ const wl_data_device_listener data_device_listener = {
             return;
         }
         bool text = wl_proxy_get_user_data(reinterpret_cast<wl_proxy*>(o)) == o;
-        if (a.paste && text) {
-            int p[2];
-            if (pipe(p) == 0) {
-                wl_data_offer_receive(o, "text/plain", p[1]);
-                close(p[1]);
-                wl_display_flush(a.display);
-                std::string got;
-                char buf[256];
-                ssize_t n;
-                while ((n = read(p[0], buf, sizeof buf)) > 0) got.append(buf, size_t(n));
-                close(p[0]);
-                out("paste %s", got.c_str());
-            }
-        }
+        if (a.paste && text) out("paste %s", read_offer(a, o, "text/plain").c_str());
         wl_data_offer_destroy(o);
     },
 };
@@ -314,9 +365,30 @@ const wl_keyboard_listener keyboard_listener = {
     [](void*, wl_keyboard*, int32_t, int32_t) {},
 };
 
+// --cursor: a solid image on the cursor surface, attached at (dx, dy).
+void draw_cursor(App& a, int w, int h, uint32_t color, int dx, int dy) {
+    wl_buffer* b = a.cursor_pool.shm(a.shm, w, h, color);
+    if (!b) return;
+    if (dx || dy) wl_surface_offset(a.cursor, dx, dy);
+    wl_surface_attach(a.cursor, b, 0, 0);
+    wl_surface_damage_buffer(a.cursor, 0, 0, w, h);
+    wl_surface_commit(a.cursor);
+}
+
+void on_pointer_enter(App& a, wl_pointer* p, uint32_t serial) {
+    if (a.cursor_w <= 0 || a.cursor_h <= 0) return;
+    if (!a.cursor) {
+        a.cursor = wl_compositor_create_surface(a.compositor);
+        draw_cursor(a, a.cursor_w, a.cursor_h, a.cursor_color, 0, 0);
+    }
+    wl_pointer_set_cursor(p, serial, a.cursor, a.cursor_hx, a.cursor_hy);
+    out("cursor-set");
+}
+
 const wl_pointer_listener pointer_listener = {
-    [](void*, wl_pointer*, uint32_t, wl_surface*, wl_fixed_t x, wl_fixed_t y) {
+    [](void* data, wl_pointer* p, uint32_t serial, wl_surface*, wl_fixed_t x, wl_fixed_t y) {
         out("enter %d %d", wl_fixed_to_int(x), wl_fixed_to_int(y));
+        on_pointer_enter(*static_cast<App*>(data), p, serial);
     },
     [](void*, wl_pointer*, uint32_t, wl_surface*) { out("leave"); },
     [](void*, wl_pointer*, uint32_t, wl_fixed_t x, wl_fixed_t y) {
@@ -526,6 +598,13 @@ int main(int argc, char** argv) {
         else if (k == "--copy") a.copy_text = next();
         else if (k == "--drag") a.drag_text = next();
         else if (k == "--paste") a.paste = true;
+        else if (k == "--drop") a.drop = true;
+        else if (k == "--cursor") {
+            char hex[16] = {};
+            std::sscanf(next().c_str(), "%dx%d:%15[0-9A-Fa-f]:%d,%d", &a.cursor_w, &a.cursor_h, hex, &a.cursor_hx,
+                        &a.cursor_hy);
+            a.cursor_color = uint32_t(std::strtoul(hex, nullptr, 16));
+        }
         else if (k == "--csd") a.csd = true;
         else if (k == "--dmabuf") a.use_dmabuf = true;
         else if (k == "--udmabuf") a.use_dmabuf = a.pool.force_udmabuf = true;
@@ -550,7 +629,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (a.ddm && a.seat && (a.paste || !a.copy_text.empty() || !a.drag_text.empty())) {
+    g_app = &a;
+    if (a.ddm && a.seat && (a.paste || a.drop || !a.copy_text.empty() || !a.drag_text.empty())) {
         a.data_device = wl_data_device_manager_get_data_device(a.ddm, a.seat);
         wl_data_device_add_listener(a.data_device, &data_device_listener, &a);
     }
@@ -621,11 +701,18 @@ int main(int argc, char** argv) {
                 a.color = uint32_t(std::strtoul(buf + 6, nullptr, 16));
                 redraw(a);
             }
+            int cw = 0, ch = 0, cdx = 0, cdy = 0;
+            char chex[16] = {};
+            if (a.cursor && std::sscanf(buf, "cursor %d %d %15s %d %d", &cw, &ch, chex, &cdx, &cdy) == 5) {
+                draw_cursor(a, cw, ch, uint32_t(std::strtoul(chex, nullptr, 16)), cdx, cdy);
+                out("cursor-updated");
+            }
         }
         if (wl_display_dispatch_pending(a.display) < 0) break;
     }
     int err = wl_display_get_error(a.display);
     a.pool.clear();
+    a.cursor_pool.clear();
     wl_display_disconnect(a.display);
     return err ? 1 : 0;
 }

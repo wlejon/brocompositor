@@ -2,7 +2,8 @@
 // reads the regular and primary selections, the host sees SelectionChanged
 // with the offered MIME types, a replaced source is cancelled (its wl-copy
 // exits), and clearing empties the selection. A client's drag shows its
-// icon to the host (drag_icon), at its offset against the pointer.
+// icon to the host (drag_icon), at its offset against the pointer. The
+// host's own drag (start_host_drag) drops on a client that reads its data.
 #include "linux/wl_harness.h"
 #include "printers.h"
 
@@ -34,11 +35,13 @@ bool has_selection_event(Host& host, bool primary, const std::string& mime) {
 }
 
 void drag_icon(Host& host);
+void host_drag(Host& host);
 
 void run(Host& host) {
     if (which("wl-copy").empty() || which("wl-paste").empty()) {
         std::printf("SKIP: wl-clipboard not installed\n");
         drag_icon(host);
+        host_drag(host);
         return;
     }
     // Regular selection round trip.
@@ -103,6 +106,7 @@ void run(Host& host) {
     paster->kill_now();
 
     drag_icon(host);
+    host_drag(host);
 }
 
 // A drag a client starts (wl_data_device.start_drag) with an icon: the host
@@ -144,6 +148,63 @@ void drag_icon(Host& host) {
         return !ev.empty() && ev.back().surface == kNoSurface;
     }));
     d->kill_now();
+}
+
+// The host's own drag (start_host_drag): a client under the pointer gets an
+// ordinary drag offering the host's types, takes it, reads the data on the
+// drop and finishes; the host hears the end with the client's action. Let
+// go over no client, the drag ends with nothing done.
+void host_drag(Host& host) {
+    constexpr uint32_t kBtnLeft = 0x110;
+    auto t = Child::spawn({BC_WL_CLIENT, "--app-id", "taker", "--drop"}, host.client_env());
+    REQUIRE(t);
+    REQUIRE(t->wait_line("ready", 5000));
+    REQUIRE(host.wait([&] { return host.window_by_app_id("taker") != kNoWindow; }));
+    const Rect f = host.server().query(host.window_by_app_id("taker"))->frame;
+
+    // Over nothing to begin with (the host's UI), then onto the client.
+    host.server().inject_pointer_warp(f.x + f.width + 40, f.y + 10);
+    ServerBackend::HostDrag d;
+    d.data = {{"text/plain", "from the host"}, {"text/x-bc-host", "x"}};
+    d.actions = 1 | 2;
+    const uint64_t id = host.server().start_host_drag(d);
+    REQUIRE(id != 0);
+    CHECK_EQ(host.server().start_host_drag(d), uint64_t(0));  // one at a time
+    host.server().inject_pointer_warp(f.x + 25, f.y + 15);
+    REQUIRE(t->wait_line("drag-enter 25 15", 5000));
+    CHECK(t->wait_line("drag-action 1", 5000));  // copy: both allow it, the client prefers it
+    host.server().inject_pointer_warp(f.x + 30, f.y + 20);
+    CHECK(t->wait_line("drag-motion 30 20", 5000));
+    host.server().inject_pointer_button(kBtnLeft, false);
+    CHECK(t->wait_line("dropped from the host", 5000));
+    CHECK(host.wait([&] {
+        auto ev = host.server_events_of<HostDragEnded>();
+        return !ev.empty() && ev.back().drag == id && ev.back().dropped && ev.back().action == 1;
+    }));
+
+    // Over the client and back off it, released over nothing.
+    host.server().inject_pointer_warp(f.x + f.width + 40, f.y + 10);
+    const uint64_t id2 = host.server().start_host_drag(d);
+    REQUIRE(id2 != 0 && id2 != id);
+    host.server().inject_pointer_warp(f.x + 25, f.y + 15);
+    REQUIRE(t->wait_count("drag-enter", 2, 5000));
+    host.server().inject_pointer_warp(f.x + f.width + 40, f.y + 10);
+    CHECK(t->wait_line("drag-leave", 5000));
+    host.server().inject_pointer_button(kBtnLeft, false);
+    CHECK(host.wait([&] {
+        auto ev = host.server_events_of<HostDragEnded>();
+        return !ev.empty() && ev.back().drag == id2 && !ev.back().dropped && ev.back().action == 0;
+    }));
+
+    // Cancelled by the host.
+    const uint64_t id3 = host.server().start_host_drag(d);
+    REQUIRE(id3 != 0);
+    host.server().cancel_host_drag();
+    CHECK(host.wait([&] {
+        auto ev = host.server_events_of<HostDragEnded>();
+        return !ev.empty() && ev.back().drag == id3 && !ev.back().dropped;
+    }));
+    t->kill_now();
 }
 
 }  // namespace

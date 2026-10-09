@@ -251,6 +251,7 @@ void Server::publish_cursor_position() {
 }
 
 void Server::set_cursor(const CursorChanged& c) {
+    track_cursor_surface(c.surface != kNoSurface ? surface_by_id(c.surface) : nullptr);
     {
         std::lock_guard<std::mutex> lock(mirror.m);
         const CursorChanged& o = mirror.cursor;
@@ -258,6 +259,50 @@ void Server::set_cursor(const CursorChanged& c) {
         mirror.cursor = c;
     }
     server_events.push(c);
+}
+
+// A client's pointer image moves its hotspot with its commits: a buffer
+// attached at (dx, dy) (or wl_surface.offset) moves the image by that much
+// against the pointer, so the hotspot moves the other way (wl_pointer
+// set_cursor). Its new pictures need nothing here: the host leases the
+// surface's newest frame.
+void Server::track_cursor_surface(wlr_surface* s) {
+    if (s == cursor_surface) return;
+    cursor_surface_commit.disconnect();
+    cursor_surface_destroy.disconnect();
+    cursor_surface = s;
+    if (!s) return;
+    const SurfaceId id = surface_id(s);
+    cursor_surface_commit.connect(&s->events.commit, [this, id](void*) {
+        if (!cursor_surface) return;
+        const int32_t dx = cursor_surface->current.dx, dy = cursor_surface->current.dy;
+        if (dx == 0 && dy == 0) return;
+        CursorChanged c;
+        {
+            std::lock_guard<std::mutex> lock(mirror.m);
+            c = mirror.cursor;
+        }
+        if (c.surface != id) return;
+        c.hotspot.x -= dx;
+        c.hotspot.y -= dy;
+        set_cursor(c);
+    });
+    cursor_surface_destroy.connect(&s->events.destroy, [this, id](void*) {
+        cursor_surface_commit.disconnect();
+        cursor_surface_destroy.disconnect();
+        cursor_surface = nullptr;
+        bool shown;
+        {
+            std::lock_guard<std::mutex> lock(mirror.m);
+            shown = mirror.cursor.surface == id;
+        }
+        // The image is gone: no pointer until the client sets another.
+        if (shown) {
+            CursorChanged c;
+            c.hidden = true;
+            set_cursor(c);
+        }
+    });
 }
 
 void Server::focus_surface(wlr_surface* surface) {

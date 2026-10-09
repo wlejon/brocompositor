@@ -21,6 +21,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 option(BROCOMPOSITOR_BUILD_TESTS "Build the brocompositor tests" ${_bc_top_level})
+# The scripted Wayland test clients alone (tests/linux/clients.cmake), for a
+# host whose own tests drive them against its server.
+option(BROCOMPOSITOR_BUILD_TEST_CLIENTS "Build the scripted Wayland test clients (bc_wl_client, ...)" OFF)
 
 # Coverage. Scoped to a top-level build: a consumer that add_subdirectory()s
 # brocompositor has no business having its own build instrumented from in here.
@@ -408,5 +411,7 @@ endif()
 if(BROCOMPOSITOR_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+elseif(BROCOMPOSITOR_BUILD_TEST_CLIENTS)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/clients.cmake)
 endif()
 

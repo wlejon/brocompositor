@@ -280,6 +280,9 @@ struct Server {
     Listener output_mgr_apply, output_mgr_test, layout_change;
     Listener selection_changed, primary_changed;
     Listener drag_icon_destroy, drag_icon_commit;
+    // The surface a client set as the pointer's image (wl_pointer.set_cursor):
+    // its commits move the hotspot (wl_surface.offset / attach dx, dy).
+    Listener cursor_surface_commit, cursor_surface_destroy;
 
     std::unordered_map<wlr_surface*, std::unique_ptr<SurfaceRec>> surfaces;
     std::unordered_map<wlr_xdg_toplevel*, std::unique_ptr<ToplevelRec>> toplevels;
@@ -305,6 +308,7 @@ struct Server {
     wlr_surface* pointer_surface = nullptr;
     wlr_surface* drag_icon = nullptr;
     Point drag_icon_offset;  // the icon's top-left against the pointer
+    wlr_surface* cursor_surface = nullptr;  // the client's pointer image (set_cursor)
 
     std::set<wlr_surface*> dirty_roots;
     bool all_trees_dirty = false;
@@ -501,6 +505,7 @@ struct Server {
     void focus_surface(wlr_surface* surface);
     void pointer_route(SurfaceId surface, double sx, double sy, uint32_t time);
     void set_cursor(const CursorChanged& cursor);
+    void track_cursor_surface(wlr_surface* surface);
     void forget_surface_focus(wlr_surface* surface);
     void inject_key(uint32_t keycode, bool pressed);
     void inject_pointer_motion(double dx, double dy);
@@ -519,6 +524,17 @@ struct Server {
 
     // ---- selection.cpp ----
     void init_selection();
+    // The host's own drag (ServerBackend::start_host_drag): its data source,
+    // from the start until the drag is over (dropped and finished, or not).
+    struct HostDataSource;
+    HostDataSource* host_drag = nullptr;
+    uint64_t host_drag_serial = 0;
+    // A host drag has no client behind it; wlr_drag_create wants one, and
+    // with a source it only ever reads the seat from it.
+    wlr_seat_client host_seat_client{};
+    uint64_t start_host_drag(ServerBackend::HostDrag drag);
+    void cancel_host_drag();
+    void host_drag_ended(HostDataSource* source);
 
     // ---- xwayland.cpp ----
     bool init_xwayland(std::string* error);

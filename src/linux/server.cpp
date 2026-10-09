@@ -238,6 +238,16 @@ std::optional<SurfaceNode> ServerBackend::drag_icon() const {
     return impl_->mirror.drag_icon;
 }
 
+uint64_t ServerBackend::start_host_drag(HostDrag drag) {
+    Server* s = impl_.get();
+    return s->dispatcher->call([s, d = std::move(drag)]() mutable { return s->start_host_drag(std::move(d)); });
+}
+
+void ServerBackend::cancel_host_drag() {
+    Server* s = impl_.get();
+    s->dispatcher->post([s] { s->cancel_host_drag(); });
+}
+
 // ---------------------------------------------------------------- outputs
 
 std::vector<MonitorSnapshot> ServerBackend::monitors() const {

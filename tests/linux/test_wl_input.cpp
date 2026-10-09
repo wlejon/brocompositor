@@ -183,6 +183,44 @@ void foot(Host& host, const std::string& dir) {
     CHECK(t->wait_exit(5000));
 }
 
+// A client's own pointer image (wl_pointer.set_cursor): the host hears the
+// surface and hotspot, leases the surface's frames like any other, and a
+// commit that attaches at an offset moves the hotspot the other way.
+void client_cursor(Host& host) {
+    auto c = Child::spawn({BC_WL_CLIENT, "--app-id", "cursor", "--size", "200x150", "--cursor", "12x10:FFFF00FF:3,4"},
+                          host.client_env());
+    REQUIRE(c);
+    REQUIRE(c->wait_line("ready", 5000));
+    REQUIRE(host.wait([&] { return host.window_by_app_id("cursor") != kNoWindow; }));
+    const Rect f = host.server().query(host.window_by_app_id("cursor"))->frame;
+    host.server().inject_pointer_warp(f.x + 30, f.y + 30);
+    REQUIRE(c->wait_line("cursor-set", 5000));
+    CHECK(host.wait([&] {
+        auto cur = host.server().cursor();
+        return cur.surface != kNoSurface && cur.hotspot.x == 3 && cur.hotspot.y == 4 && !cur.hidden;
+    }));
+    const SurfaceId s = host.server().cursor().surface;
+    CHECK(host.wait([&] {
+        auto px = host.surface_pixel(s, 11, 9);
+        return px && *px == 0xFFFF00FFu;
+    }));
+    // A new picture, 16 x 14, attached 2, 1 in: the hotspot moves to 1, 3.
+    c->send("cursor 16 14 FF00FFFF 2 1\n");
+    REQUIRE(c->wait_line("cursor-updated", 5000));
+    CHECK(host.wait([&] {
+        auto cur = host.server().cursor();
+        return cur.surface == s && cur.hotspot.x == 1 && cur.hotspot.y == 3;
+    }));
+    CHECK(host.wait([&] {
+        auto px = host.surface_pixel(s, 15, 13);
+        return px && *px == 0xFF00FFFFu;
+    }));
+    // Off the client: the pointer is the host's again.
+    host.server().inject_pointer_warp(f.x + f.width + 50, f.y + 30);
+    CHECK(host.wait([&] { return host.server().cursor().surface == kNoSurface; }));
+    c->kill_now();
+}
+
 }  // namespace
 
 int main() {
@@ -199,6 +237,7 @@ int main() {
         return 1;
     }
     scripted(host);
+    client_cursor(host);
     foot(host, dir);
     host.stop();
     return finish("test_wl_input");

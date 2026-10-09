@@ -155,6 +155,17 @@ struct DragIconChanged {
     SurfaceId surface = kNoSurface;  // kNoSurface: drag ended / no icon
 };
 
+// The host's own drag (ServerBackend::start_host_drag) is over. `dropped`:
+// the button came up over a client that took it; `action`: what that client
+// did with it once it had the data (wl_data_device_manager dnd_action: 1
+// copy, 2 move), 0 when it did nothing (cancelled, dropped where nothing
+// took it, or a client that let the offer go without finishing).
+struct HostDragEnded {
+    uint64_t drag = 0;  // start_host_drag's id
+    bool dropped = false;
+    uint32_t action = 0;
+};
+
 // Where a raw input event came from. Client input (virtual-keyboard /
 // virtual-pointer protocols) is synthesized by another program: hosts may
 // want to keep it away from their own shortcuts, and the server keeps it
@@ -251,7 +262,7 @@ struct SelectionChanged {
 using ServerEvent =
     std::variant<OutputFrame, OutputPresented, OutputPresentFailed, OutputsChanged, SurfaceCommitted,
                  WindowTreeChanged, LayerSurfaceAdded, LayerSurfaceChanged, LayerSurfaceRemoved, CursorChanged,
-                 DragIconChanged, PointerMotion, PointerButton, PointerAxis, PointerFrame, KeyboardKey,
+                 DragIconChanged, HostDragEnded, PointerMotion, PointerButton, PointerAxis, PointerFrame, KeyboardKey,
                  WindowRequest, SelectionChanged,
                  // input_events.h
                  TouchDown, TouchMotion, TouchUp, TouchCancel, TouchFrame, TabletToolProximity,

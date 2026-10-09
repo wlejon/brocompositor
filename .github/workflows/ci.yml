@@ -12,7 +12,7 @@ concurrency:
 
 # brocompositor's one sibling, brodisplays, and bronze with brass (the
 # JavaScript runtime brocompositor_api binds; BROCOMPOSITOR_ENABLE_API is on in
-# a top-level build) come from the commits CMakeLists.txt pins
+# a top-level build) come from the heads of their main branches
 # (cmake/bro_deps.cmake), fetched at configure, so every job builds a plain
 # clone. bronze and brass compile inside this build tree with the job's own
 # compiler and CRT; the api is bound across bronze's C++ embed boundary, so a

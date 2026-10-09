@@ -50,7 +50,7 @@ jobs:
             libdrm-dev libgbm-dev libvulkan-dev libxcb1-dev libxcb-randr0-dev libxau-dev libglib2.0-dev
 
       # brodisplays and bronze (with brass) are fetched at configure from the
-      # pinned commits.
+      # heads of their main branches.
       - uses: actions/checkout@v7
         with:
           path: brocompositor

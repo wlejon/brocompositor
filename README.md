@@ -439,7 +439,7 @@ host leases the newest frame (`acquire`), GPU-waits its sync, samples, and
 There are no submodules: brodisplays (and bronze, for the JavaScript API) is a `bro_dependency()` pin in `CMakeLists.txt`, resolved through `cmake/bro_deps.cmake` in this order:
 1. An existing `brodisplays` CMake target (from a superbuild);
 2. A working tree beside the top-level project (`../brodisplays`), or `-DFETCHCONTENT_SOURCE_DIR_BRODISPLAYS=<path>`;
-3. The pinned commit, fetched from GitHub at configure, so a plain `git clone` builds.
+3. The head of its main branch, fetched from GitHub at configure, so a plain `git clone` builds.
 
 ### Consuming `brocompositor` in CMake
 
@@ -497,7 +497,7 @@ ctest --test-dir build-release --output-on-failure
 ### Build Options
 
 - `-DBROCOMPOSITOR_WITH_WAYLAND=ON|OFF` (Linux, default ON if wlroots 0.18 is found): build Wayland display server role.
-- `-DBROCOMPOSITOR_ENABLE_API=ON|OFF` (default ON when top-level): build standalone Bronze JavaScript API (`brocompositor_api`; bronze from `../bronze` or the pinned commit).
+- `-DBROCOMPOSITOR_ENABLE_API=ON|OFF` (default ON when top-level): build standalone Bronze JavaScript API (`brocompositor_api`; bronze from `../bronze` or the head of its main branch).
 - `-DBROCOMPOSITOR_BUILD_TESTS=ON|OFF` (default ON when top-level): build test suites and test client binaries.
 - `-DBROCOMPOSITOR_COVERAGE=ON|OFF` (default OFF): instrument GCC/Clang with gcov for code coverage.
 

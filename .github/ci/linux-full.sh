@@ -5,7 +5,7 @@
 #
 #   /w/brocompositor           this repo
 #
-# brodisplays and bronze (with brass) come from the commits CMakeLists.txt pins
+# brodisplays and bronze (with brass) come from the heads of their main branches
 # (cmake/bro_deps.cmake), fetched at configure.
 #
 # Environment: CC / CXX (gcc|clang), CONFIG (Release|Debug), COVERAGE (ON|OFF),

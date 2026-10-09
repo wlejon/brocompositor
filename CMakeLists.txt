@@ -98,8 +98,8 @@ brocompositor_warnings(brocompositor_shell_common)
 # clients; there it is needed only by the integration test.
 # Resolved through cmake/bro_deps.cmake: an existing `brodisplays` target (a
 # superbuild already added it) wins; otherwise the ../brodisplays working tree
-# beside the top-level project; otherwise the pinned commit, fetched at
-# configure. The pin is declared here; it is added here on Windows and macOS,
+# beside the top-level project; otherwise the head of its main, fetched at
+# configure. It is declared here; it is added here on Windows and macOS,
 # and further down on Linux for the test only.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
 bro_dependency(brodisplays GITHUB wlejon/brodisplays PIN_ONLY)
@@ -401,7 +401,7 @@ option(BROCOMPOSITOR_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_L
 if(BROCOMPOSITOR_ENABLE_API)
     # bronze (with brass, its code generator) through cmake/bro_deps.cmake: an
     # outer project's target, else ../bronze beside the top-level project, else
-    # the pinned commit, fetched at configure.
+    # the head of its main, fetched at configure.
     bro_dependency(bronze GITHUB wlejon/bronze TARGET bronze_runtime_shared
                    OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
 

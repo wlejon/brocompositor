@@ -240,17 +240,25 @@ void WindowManager::on_added(const WindowSnapshot& s) {
     stack_add(s.id);
     if (target != kNoWorkspace) {
         attach(s.id, it->second, target);
-        // A decorated window placed with its client at the top of the work
-        // area would have its title bar under the shell's panel (or off
-        // screen): move it down by the frame's top band.
+        // A decorated window is placed by its client's rect, which the host's
+        // frame then grows past: the title bar could land under the shell's
+        // panel (or off screen), and the bottom band under a bar. Fit the
+        // whole frame, decoration included, inside the work area: moved in,
+        // and shrunk where it is larger than the area.
         Win& nw = it->second;
         const Margins in = insets_now(nw);
-        if (in.top > 0 && !is_tiled(nw) && !nw.snap.maximized && !nw.snap.fullscreen) {
+        if (!(in == Margins{}) && !is_tiled(nw) && !nw.snap.maximized && !nw.snap.fullscreen) {
             if (const MonitorSnapshot* m = window_monitor(nw)) {
                 const Rect& wa = m->work_area;
-                if (!wa.empty() && nw.snap.frame.y - in.top < wa.y) {
-                    Rect f = nw.snap.frame;
-                    f.y = wa.y + in.top;
+                const Rect& f0 = nw.snap.frame;
+                const Rect outer{f0.x - in.left, f0.y - in.top, f0.width + in.horizontal(),
+                                 f0.height + in.vertical()};
+                if (!wa.empty() && !f0.empty() && !wa.contains(outer)) {
+                    const int32_t w = std::min(outer.width, wa.width);
+                    const int32_t h = std::min(outer.height, wa.height);
+                    const Rect fitted{std::clamp(outer.x, wa.x, wa.right() - w),
+                                      std::clamp(outer.y, wa.y, wa.bottom() - h), w, h};
+                    const Rect f = client_in(nw, fitted, false);
                     nw.floating_rect = f;
                     nw.placed = f;
                     emit(PlaceWindow{s.id, f});

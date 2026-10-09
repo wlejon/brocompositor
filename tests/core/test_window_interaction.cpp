@@ -226,13 +226,17 @@ void borderless_maximized() {
     CHECK(!wm.framed(1));
     echo(wm, wm.restore(1));
 
-    // A window that maps larger than the work area (moved down under its
-    // band), then moved by the shell, maximizes and restores to where it
-    // was moved. The backend reports each step as a client lands it: the
-    // old frame until the client draws the new size.
+    // A window that maps larger than the work area is fitted inside it,
+    // frame and all: moved in and shrunk, so no band runs under the bar.
+    // Then moved by the shell, it maximizes and restores to where it was
+    // moved. The backend reports each step as a client lands it: the old
+    // frame until the client draws the new size.
     WindowSnapshot big = win(3, Rect{0, 0, 1920, 1040});
     big.decorated = true;
-    echo(wm, wm.handle(WindowAdded{big}));
+    auto added = wm.handle(WindowAdded{big});
+    CHECK_EQ(placed(added, 3), std::optional<Rect>(Rect{2, 28, 1916, 1010}));
+    echo(wm, added);
+    CHECK((Rect{0, 0, 1920, 1040}).contains(wm.window(3)->outer));
     const Rect moved{200, 120, 1000, 650};
     auto bs = wm.window(3)->snapshot;
     auto report = [&](Rect frame, bool maximized) {

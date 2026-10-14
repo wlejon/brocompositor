@@ -88,11 +88,36 @@ void placement(TestApp& app, HWND h) {
     CHECK(done(shell->place(id, t2)));
     CHECK(!IsIconic(h));
     CHECK_EQ(frame_of(h), t2);
+    // SetWindowState (Minimized, Maximized, Fullscreen, Normal) and window_icon.
+    CHECK(shell->execute(SetWindowState{id, WindowState::Minimized}));
+    CHECK(wait_until([&] { return IsIconic(h) != FALSE; }));
+    CHECK(done(shell->set_state(id, WindowState::Maximized)));
+    CHECK(wait_until([&] { return IsZoomed(h) != FALSE; }));
+    CHECK(done(shell->set_state(id, WindowState::Normal)));
+    CHECK(wait_until([&] { return !IsIconic(h) && !IsZoomed(h); }));
+    CHECK(done(shell->place(id, t2)));
+    CHECK_EQ(frame_of(h), t2);
+    CHECK(done(shell->set_state(id, WindowState::Fullscreen)));
+    CHECK(wait_until([&] {
+        auto q = shell->query(id);
+        return q.has_value() && q->fullscreen;
+    }));
+    CHECK(done(shell->set_state(id, WindowState::Normal)));
+    CHECK(wait_until([&] { return frame_of(h) == t2; }));
+
+    auto icon = shell->window_icon(id, 32);
+    REQUIRE(icon.has_value());
+    CHECK(icon->size > 0);
+    CHECK_EQ(icon->rgba.size(), size_t(icon->size) * size_t(icon->size) * 4);
+    CHECK(!shell->window_icon(987654, 32).has_value());
+
     // Unknown ids fail cleanly and at once.
     auto bad = shell->place(987654, t2);
     CHECK(bad.wait_for(0ms) == std::future_status::ready && !bad.get());
+    CHECK(!done(shell->set_state(987654, WindowState::Maximized)));
     CHECK(!done(shell->set_visible(987654, false)));
     CHECK(!shell->execute(PlaceWindow{987654, t2}));
+    CHECK(!shell->execute(SetWindowState{987654, WindowState::Maximized}));
 }
 
 void hide_methods(TestApp& app, HWND h) {

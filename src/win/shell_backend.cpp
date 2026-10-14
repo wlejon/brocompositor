@@ -1,5 +1,6 @@
 #include "win/shell_impl.h"
 #include "win/util.h"
+#include "win/window_query.h"
 
 #include <shlobj.h>
 
@@ -228,15 +229,13 @@ EventQueue& ShellBackend::events() { return impl_->queue; }
 
 bool ShellBackend::execute(const Command& command) {
     WindowId id = std::visit([](const auto& c) { return c.id; }, command);
-    // Window states are not implemented by the shell backends: refused, so
-    // the host can report them unsupported.
-    if (std::holds_alternative<SetWindowState>(command)) return false;
     bool focus_none = std::holds_alternative<FocusWindow>(command) && id == kNoWindow;
     if (!focus_none && !impl_->hwnd_of(id)) return false;
     std::visit(
         [&](const auto& c) {
             using T = std::decay_t<decltype(c)>;
             if constexpr (std::is_same_v<T, PlaceWindow>) place(c.id, c.frame);
+            else if constexpr (std::is_same_v<T, SetWindowState>) set_state(c.id, c.state);
             else if constexpr (std::is_same_v<T, SetWindowVisible>) set_visible(c.id, c.visible);
             else if constexpr (std::is_same_v<T, FocusWindow>) focus(c.id);
             else if constexpr (std::is_same_v<T, CloseWindow>) close(c.id);
@@ -255,6 +254,12 @@ Completion<bool> ShellBackend::place(WindowId id, const Rect& frame) {
     HWND h = impl_->hwnd_of(id);
     if (!h || frame.empty()) return completed(false);
     return impl_->run_for<bool>(h, false, [h, frame](Impl& d) { return d.do_place(h, frame); });
+}
+
+Completion<bool> ShellBackend::set_state(WindowId id, WindowState state) {
+    HWND h = impl_->hwnd_of(id);
+    if (!h) return completed(false);
+    return impl_->run_for<bool>(h, false, [h, state](Impl& d) { return d.do_set_state(h, state); });
 }
 
 Completion<bool> ShellBackend::set_visible(WindowId id, bool visible) {
@@ -331,6 +336,13 @@ std::optional<WindowSnapshot> ShellBackend::query(WindowId id) const {
     if (!h || !IsWindow(h)) return std::nullopt;
     DpiScope dpi;
     return impl_->make_snapshot(h);
+}
+
+std::optional<WindowIcon> ShellBackend::window_icon(WindowId id, int32_t size) const {
+    HWND h = impl_->hwnd_of(id);
+    if (!h || !IsWindow(h)) return std::nullopt;
+    DpiScope dpi;
+    return extract_window_icon(h, size);
 }
 
 std::vector<MonitorSnapshot> ShellBackend::monitors() const {

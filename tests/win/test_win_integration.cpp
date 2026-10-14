@@ -28,6 +28,7 @@ struct Rig {
         std::vector<Completion<bool>> pending;
         for (const Command& c : cmds) {
             if (auto* p = std::get_if<PlaceWindow>(&c)) pending.push_back(shell->place(p->id, p->frame));
+            else if (auto* s = std::get_if<SetWindowState>(&c)) pending.push_back(shell->set_state(s->id, s->state));
             else if (auto* v = std::get_if<SetWindowVisible>(&c)) pending.push_back(shell->set_visible(v->id, v->visible));
             else if (auto* f = std::get_if<FocusWindow>(&c)) shell->focus(f->id).wait_for(2s);
             else if (auto* cw = std::get_if<brocompositor::CloseWindow>(&c)) pending.push_back(shell->close(cw->id));

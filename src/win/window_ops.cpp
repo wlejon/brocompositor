@@ -67,6 +67,14 @@ Rect parked_rect(const Rect& frame) {
     return Rect{vs.right() + 64, vs.y, frame.width, frame.height};
 }
 
+void restore_fullscreen_style(HWND h, LONG saved_style, LONG saved_exstyle) {
+    SetWindowLongW(h, GWL_STYLE, saved_style);
+    SetWindowLongW(h, GWL_EXSTYLE, saved_exstyle);
+    UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED;
+    if (hung(h)) flags |= SWP_ASYNCWINDOWPOS;
+    SetWindowPos(h, nullptr, 0, 0, 0, 0, flags);
+}
+
 }  // namespace
 
 HWND ShellBackend::Impl::hwnd_of(WindowId id) const {
@@ -78,21 +86,149 @@ HWND ShellBackend::Impl::hwnd_of(WindowId id) const {
 bool ShellBackend::Impl::do_place(HWND h, const Rect& frame) {
     if (!IsWindow(h)) return false;
     Hidden was;
+    bool was_state_maximized = false;
+    bool was_fullscreen_styled = false;
+    LONG saved_style = 0;
+    LONG saved_exstyle = 0;
     {
         std::lock_guard<std::mutex> lock(mutex);
         auto it = by_hwnd.find(h);
         if (it == by_hwnd.end()) return false;
         was = it->second.hidden;
         it->second.hidden = Hidden::None;  // an explicit placement also un-hides
+        was_state_maximized = it->second.state_maximized;
+        it->second.state_maximized = false;
+        was_fullscreen_styled = it->second.fullscreen_styled;
+        saved_style = it->second.saved_style;
+        saved_exstyle = it->second.saved_exstyle;
     }
     if (was != Hidden::None) journal_sync();
     if (was == Hidden::Hide) show(h, SW_SHOWNA);
+
+    HMONITOR hm = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    bool got_mi = GetMonitorInfoW(hm, &mi) != FALSE;
+
+    // When WindowManager::maximize(id) emits SetWindowState{Maximized} followed
+    // immediately by PlaceWindow{id, work_area}, keep the window maximized.
+    if (was_state_maximized && IsZoomed(h) && got_mi && to_rect(mi.rcWork) == frame) {
+        request_report(h);
+        return true;
+    }
+
+    // If the window was borderless-fullscreen and is now being placed into a
+    // non-fullscreen rectangle, restore its normal frame styles first.
+    if (was_fullscreen_styled && (!got_mi || !frame.contains(to_rect(mi.rcMonitor)))) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            auto it = by_hwnd.find(h);
+            if (it != by_hwnd.end()) it->second.fullscreen_styled = false;
+        }
+        restore_fullscreen_style(h, saved_style, saved_exstyle);
+    }
+
     // SW_SHOWNOACTIVATE restores a minimized or maximized window to its
     // normal state without activating it; placement then applies.
     if (IsIconic(h) || IsZoomed(h)) show(h, SW_SHOWNOACTIVATE);
     bool ok = set_frame(h, frame);
     request_report(h);
     return ok;
+}
+
+bool ShellBackend::Impl::do_set_state(HWND h, WindowState state) {
+    if (!IsWindow(h)) return false;
+    if (state != WindowState::Minimized) {
+        bool is_hidden = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            auto it = by_hwnd.find(h);
+            if (it == by_hwnd.end()) return false;
+            is_hidden = it->second.hidden != Hidden::None;
+        }
+        if (is_hidden) do_set_visible(h, true);
+    }
+
+    bool was_fullscreen = false;
+    LONG saved_style = 0;
+    LONG saved_exstyle = 0;
+    Rect saved_frame;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = by_hwnd.find(h);
+        if (it == by_hwnd.end()) return false;
+        was_fullscreen = it->second.fullscreen_styled;
+        saved_style = it->second.saved_style;
+        saved_exstyle = it->second.saved_exstyle;
+        saved_frame = it->second.saved_frame;
+        it->second.state_maximized = (state == WindowState::Maximized);
+    }
+
+    if (was_fullscreen && state != WindowState::Fullscreen) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            auto it = by_hwnd.find(h);
+            if (it != by_hwnd.end()) it->second.fullscreen_styled = false;
+        }
+        restore_fullscreen_style(h, saved_style, saved_exstyle);
+    }
+
+    switch (state) {
+        case WindowState::Minimized:
+            show(h, SW_SHOWMINIMIZED);
+            break;
+        case WindowState::Maximized:
+            if (!IsIconic(h) && !IsZoomed(h) && !was_fullscreen) {
+                Rect cur = frame_bounds(h);
+                std::lock_guard<std::mutex> lock(mutex);
+                auto it = by_hwnd.find(h);
+                if (it != by_hwnd.end()) it->second.saved_frame = cur;
+            }
+            show(h, SW_SHOWMAXIMIZED);
+            break;
+        case WindowState::Normal:
+            if (IsIconic(h) || IsZoomed(h)) {
+                show(h, SW_RESTORE);
+            } else if (was_fullscreen && !saved_frame.empty()) {
+                set_frame(h, saved_frame);
+            }
+            break;
+        case WindowState::Fullscreen: {
+            if (IsIconic(h) || IsZoomed(h)) show(h, SW_RESTORE);
+            if (!was_fullscreen) {
+                LONG cur_style = GetWindowLongW(h, GWL_STYLE) & ~(WS_MAXIMIZE | WS_MINIMIZE);
+                LONG cur_exstyle = GetWindowLongW(h, GWL_EXSTYLE);
+                Rect cur_frame = frame_bounds(h);
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    auto it = by_hwnd.find(h);
+                    if (it != by_hwnd.end()) {
+                        it->second.fullscreen_styled = true;
+                        it->second.saved_style = cur_style;
+                        it->second.saved_exstyle = cur_exstyle;
+                        it->second.saved_frame = cur_frame;
+                    }
+                }
+                LONG fs_style = cur_style & ~(WS_CAPTION | WS_THICKFRAME);
+                LONG fs_exstyle = cur_exstyle & ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE |
+                                                  WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
+                SetWindowLongW(h, GWL_STYLE, fs_style);
+                SetWindowLongW(h, GWL_EXSTYLE, fs_exstyle);
+            }
+            HMONITOR hm = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi{};
+            mi.cbSize = sizeof(mi);
+            if (GetMonitorInfoW(hm, &mi)) {
+                Rect mb = to_rect(mi.rcMonitor);
+                UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED;
+                if (hung(h)) flags |= SWP_ASYNCWINDOWPOS;
+                SetWindowPos(h, nullptr, mb.x, mb.y, mb.width, mb.height, flags);
+            }
+            break;
+        }
+    }
+    request_report(h);
+    return true;
 }
 
 bool ShellBackend::Impl::do_set_visible(HWND h, bool visible) {

@@ -163,6 +163,10 @@ int run() {
 
 int main() {
     init_windows_test();
+    if (!interactive_desktop()) {
+        std::printf("[test_vulkan_import] SKIPPED: not on the interactive desktop\n");
+        return 77;
+    }
     int rc = run();
     if (rc == 77) return 77;
     return finish("test_vulkan_import");

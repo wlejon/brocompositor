@@ -226,11 +226,13 @@ std::vector<Rect> monitor_work_areas() {
 bool interactive_desktop() {
     HDESK d = OpenInputDesktop(0, FALSE, GENERIC_READ);
     if (!d) return false;
-    wchar_t name[64] = L"";
+    wchar_t name[64] = L"", ours[64] = L"";
     DWORD n = 0;
     GetUserObjectInformationW(d, UOI_NAME, name, sizeof(name), &n);
     CloseDesktop(d);
-    return std::wstring(name) == L"Default";
+    HDESK td = GetThreadDesktop(GetCurrentThreadId());
+    if (td) GetUserObjectInformationW(td, UOI_NAME, ours, sizeof(ours), &n);
+    return std::wstring(name) == L"Default" && std::wstring(ours) == std::wstring(name);
 }
 
 bool wait_until(const std::function<bool()>& cond, std::chrono::milliseconds timeout) {

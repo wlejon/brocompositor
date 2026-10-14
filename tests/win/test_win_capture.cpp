@@ -222,6 +222,10 @@ void run() {
 
 int main() {
     init_windows_test();
+    if (!interactive_desktop()) {
+        std::printf("[test_win_capture] SKIPPED: not on the interactive desktop\n");
+        return 77;
+    }
     run();
     return finish("test_win_capture");
 }

@@ -17,12 +17,68 @@
 
 #include <shellapi.h>
 
+#include <filesystem>
+#include <fstream>
+
 namespace brocompositor::win {
 
 namespace {
 
 std::mutex g_emergency_mutex;
 std::set<HWND> g_emergency;
+
+struct StandaloneBarInfo {
+    HWND hwnd = nullptr;
+    MonitorId monitor = kNoMonitor;
+    Edge edge = Edge::Top;
+    int32_t thickness = 0;
+    Rect granted;
+};
+
+std::map<MonitorId, Rect> g_standalone_base_work;
+std::map<HWND, StandaloneBarInfo> g_standalone_bars;
+
+std::filesystem::path standalone_rect_file(HWND h) {
+    wchar_t tmp[MAX_PATH] = L"";
+    GetTempPathW(MAX_PATH, tmp);
+    return std::filesystem::path(tmp) / ("brocompositor-appbar-" + std::to_string(from_hwnd(h)) + ".rect");
+}
+
+void notify_listeners_workarea_changed() {
+    for (HWND h = FindWindowExW(nullptr, nullptr, L"brocompositor.listener", nullptr); h != nullptr;
+         h = FindWindowExW(nullptr, h, L"brocompositor.listener", nullptr)) {
+        PostMessageW(h, WM_SETTINGCHANGE, SPI_SETWORKAREA, 0);
+    }
+}
+
+void apply_standalone_work_area_locked(MonitorId mon_id) {
+    auto base_it = g_standalone_base_work.find(mon_id);
+    if (base_it == g_standalone_base_work.end()) return;
+    RECT rc = to_RECT(base_it->second);
+    bool any_left = false;
+    for (const auto& [h, info] : g_standalone_bars) {
+        if (info.monitor != mon_id || info.granted.empty()) continue;
+        any_left = true;
+        switch (info.edge) {
+            case Edge::Top: rc.top = std::max(rc.top, LONG(info.granted.bottom())); break;
+            case Edge::Bottom: rc.bottom = std::min(rc.bottom, LONG(info.granted.y)); break;
+            case Edge::Left: rc.left = std::max(rc.left, LONG(info.granted.right())); break;
+            case Edge::Right: rc.right = std::min(rc.right, LONG(info.granted.x)); break;
+        }
+    }
+    if (!any_left) g_standalone_base_work.erase(base_it);
+    DpiScope dpi;
+    SystemParametersInfoW(SPI_SETWORKAREA, 0, &rc, 0);
+    notify_listeners_workarea_changed();
+}
+
+bool has_foreign_appbar_host() {
+    HWND tray = FindWindowW(L"Shell_TrayWnd", nullptr);
+    if (!tray) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(tray, &pid);
+    return pid != 0 && pid != GetCurrentProcessId();
+}
 
 UINT to_abe(Edge e) {
     switch (e) {
@@ -41,6 +97,28 @@ void appbar_remove(HWND h) {
     abd.cbSize = sizeof(abd);
     abd.hWnd = h;
     SHAppBarMessage(ABM_REMOVE, &abd);
+
+    std::error_code ec;
+    auto rect_path = standalone_rect_file(h);
+    std::lock_guard<std::mutex> lock(g_emergency_mutex);
+    auto it = g_standalone_bars.find(h);
+    if (it != g_standalone_bars.end()) {
+        MonitorId mon_id = it->second.monitor;
+        g_standalone_bars.erase(it);
+        std::filesystem::remove(rect_path, ec);
+        apply_standalone_work_area_locked(mon_id);
+    } else if (std::filesystem::exists(rect_path, ec)) {
+        std::ifstream in(rect_path);
+        Rect base{};
+        if (in >> base.x >> base.y >> base.width >> base.height && !base.empty()) {
+            RECT rc = to_RECT(base);
+            DpiScope dpi;
+            SystemParametersInfoW(SPI_SETWORKAREA, 0, &rc, 0);
+            notify_listeners_workarea_changed();
+        }
+        in.close();
+        std::filesystem::remove(rect_path, ec);
+    }
 }
 
 void register_emergency_appbar(HWND hwnd) {
@@ -54,9 +132,13 @@ void unregister_emergency_appbar(HWND hwnd) {
 }
 
 void emergency_release_reservations() {
-    std::lock_guard<std::mutex> lock(g_emergency_mutex);
-    for (HWND h : g_emergency) appbar_remove(h);
-    g_emergency.clear();
+    std::vector<HWND> handles;
+    {
+        std::lock_guard<std::mutex> lock(g_emergency_mutex);
+        handles.assign(g_emergency.begin(), g_emergency.end());
+        g_emergency.clear();
+    }
+    for (HWND h : handles) appbar_remove(h);
 }
 
 LRESULT CALLBACK appbar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -71,6 +153,41 @@ LRESULT CALLBACK appbar_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 bool ShellBackend::Impl::negotiate(AppBar& bar) {
     auto mon = monitors.find(bar.monitor);
     if (!mon) return false;
+    if (bar.standalone) {
+        std::lock_guard<std::mutex> lock(g_emergency_mutex);
+        if (g_standalone_base_work.find(bar.monitor) == g_standalone_base_work.end()) {
+            g_standalone_base_work[bar.monitor] = mon->work_area;
+        }
+        const Rect& base_work = g_standalone_base_work[bar.monitor];
+        RECT rc = to_RECT(base_work);
+        for (const auto& [other_h, other] : g_standalone_bars) {
+            if (other_h == bar.hwnd || other.monitor != bar.monitor || other.edge != bar.edge || other.granted.empty())
+                continue;
+            switch (bar.edge) {
+                case Edge::Top: rc.top = std::max(rc.top, LONG(other.granted.bottom())); break;
+                case Edge::Bottom: rc.bottom = std::min(rc.bottom, LONG(other.granted.y)); break;
+                case Edge::Left: rc.left = std::max(rc.left, LONG(other.granted.right())); break;
+                case Edge::Right: rc.right = std::min(rc.right, LONG(other.granted.x)); break;
+            }
+        }
+        switch (bar.edge) {
+            case Edge::Top: rc.bottom = rc.top + bar.thickness; break;
+            case Edge::Bottom: rc.top = rc.bottom - bar.thickness; break;
+            case Edge::Left: rc.right = rc.left + bar.thickness; break;
+            case Edge::Right: rc.left = rc.right - bar.thickness; break;
+        }
+        bar.granted = to_rect(rc);
+        if (bar.granted.empty()) return false;
+        g_standalone_bars[bar.hwnd] = StandaloneBarInfo{bar.hwnd, bar.monitor, bar.edge, bar.thickness, bar.granted};
+        {
+            std::ofstream out(standalone_rect_file(bar.hwnd), std::ios::trunc);
+            out << base_work.x << " " << base_work.y << " " << base_work.width << " " << base_work.height << "\n";
+        }
+        SetWindowPos(bar.hwnd, nullptr, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        apply_standalone_work_area_locked(bar.monitor);
+        return true;
+    }
     APPBARDATA abd{};
     abd.cbSize = sizeof(abd);
     abd.hWnd = bar.hwnd;
@@ -117,14 +234,15 @@ void ShellBackend::Impl::negotiate_new(ReservationId id) {
                              0, nullptr, nullptr, module_instance(), nullptr);
     if (!h) return refuse();
     SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-    APPBARDATA abd{};
-    abd.cbSize = sizeof(abd);
-    abd.hWnd = h;
-    abd.uCallbackMessage = kMsgAppBar;
-    if (!SHAppBarMessage(ABM_NEW, &abd)) {
-        DestroyWindow(h);
-        return refuse();
+    bool registered_with_shell = false;
+    if (has_foreign_appbar_host()) {
+        APPBARDATA abd{};
+        abd.cbSize = sizeof(abd);
+        abd.hWnd = h;
+        abd.uCallbackMessage = kMsgAppBar;
+        registered_with_shell = SHAppBarMessage(ABM_NEW, &abd) != FALSE;
     }
+    bar.standalone = !registered_with_shell;
     register_emergency_appbar(h);
     bar.hwnd = h;
     // Journal the registration before the work area changes, so a kill from
@@ -132,7 +250,10 @@ void ShellBackend::Impl::negotiate_new(ReservationId id) {
     {
         std::lock_guard<std::mutex> lock(mutex);
         auto it = appbars.find(id);
-        if (it != appbars.end()) it->second.hwnd = h;
+        if (it != appbars.end()) {
+            it->second.hwnd = h;
+            it->second.standalone = bar.standalone;
+        }
     }
     journal_sync();
     if (!negotiate(bar)) {

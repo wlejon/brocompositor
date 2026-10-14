@@ -43,6 +43,11 @@ struct Tracked {
     Hidden hidden = Hidden::None;
     Rect restore_frame;    // frame before the backend hid it
     Rect parked_frame;     // where a Park put it
+    bool fullscreen_styled = false;
+    LONG saved_style = 0;
+    LONG saved_exstyle = 0;
+    Rect saved_frame;
+    bool state_maximized = false;
 };
 
 struct AppBar {
@@ -53,6 +58,7 @@ struct AppBar {
     int32_t thickness = 0;
     Rect granted;
     bool negotiated = false;
+    bool standalone = false;
 };
 
 struct ShellBackend::Impl : std::enable_shared_from_this<ShellBackend::Impl> {
@@ -124,6 +130,7 @@ struct ShellBackend::Impl : std::enable_shared_from_this<ShellBackend::Impl> {
     }
     HWND hwnd_of(WindowId id) const;
     bool do_place(HWND h, const Rect& frame);
+    bool do_set_state(HWND h, WindowState state);
     bool do_set_visible(HWND h, bool visible);
     FocusResult do_focus(HWND h, uint64_t generation);
     bool do_close(HWND h);

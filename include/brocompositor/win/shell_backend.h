@@ -98,6 +98,7 @@ public:
     // the order they were issued. A later focus() supersedes an earlier one
     // that has not finished.
     Completion<bool> place(WindowId id, const Rect& frame);
+    Completion<bool> set_state(WindowId id, WindowState state);
     Completion<bool> set_visible(WindowId id, bool visible);
     Completion<FocusResult> focus(WindowId id);
     Completion<bool> close(WindowId id);
@@ -105,6 +106,7 @@ public:
     // Fresh OS query (not the last reported snapshot); never blocks on the
     // window's process.
     std::optional<WindowSnapshot> query(WindowId id) const;
+    std::optional<WindowIcon> window_icon(WindowId id, int32_t size = 0) const;
     std::vector<MonitorSnapshot> monitors() const;
     uint64_t native_handle(WindowId id) const;
     WindowId find(uint64_t native_handle) const;

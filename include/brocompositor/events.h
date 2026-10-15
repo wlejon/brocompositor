@@ -129,7 +129,15 @@ struct ReservationChanged {
     Rect rect;
 };
 
+// A window asks for the user's attention without taking focus (Windows:
+// FlashWindow, seen as the shell hook's HSHELL_FLASH). A fact for the
+// shell's task list to show; the policy core ignores it.
+struct WindowAttention {
+    WindowId id = kNoWindow;
+};
+
 using Event = std::variant<WindowAdded, WindowRemoved, WindowChanged, FocusChanged,
-                           MoveSizeStarted, MoveSizeEnded, MonitorsChanged, ReservationChanged>;
+                           MoveSizeStarted, MoveSizeEnded, MonitorsChanged, ReservationChanged,
+                           WindowAttention>;
 
 }  // namespace brocompositor

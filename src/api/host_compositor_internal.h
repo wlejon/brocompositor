@@ -1,5 +1,6 @@
 #pragma once
 
+#include "api.h"
 #include "embed/embed.h"
 #include "brocompositor/window_manager.h"
 #include "brocompositor/event_queue.h"
@@ -42,6 +43,11 @@ void installWorkspacesOnto(Value compObj);
 void installEventsOnto(Value compObj);
 void installPolicyOnto(Value compObj);
 void installInteractionOnto(Value compObj);
+void installShellOnto(Value compObj);
+
+// The host's desktop-shell role (setShellRole); a copy, so a call made
+// through it survives the host replacing it.
+ShellRole shellRole();
 
 // Event handling
 void drainCompositorEvents();

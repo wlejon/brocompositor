@@ -131,7 +131,7 @@ if(WIN32)
     target_link_libraries(bc_win_shell_child PRIVATE brocompositor_win)
     brocompositor_warnings(bc_win_shell_child)
 
-    foreach(t lifecycle ops focus appbar integration capture recovery)
+    foreach(t lifecycle ops focus appbar integration capture recovery shell)
         if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/win/test_win_${t}.cpp)
             continue()
         endif()

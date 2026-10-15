@@ -71,6 +71,29 @@ void setActivationTokenSource(ActivationTokenSource source);
 using WindowIconSource = std::function<std::optional<brocompositor::WindowIcon>(WindowId id, int32_t size)>;
 void setWindowIconSource(WindowIconSource source);
 
+/// What the host does as the session's desktop shell over a system
+/// compositor (Windows: win::ShellBackend::attach_desktop_shell). Every
+/// member is optional; without one the API answers as an ordinary app.
+struct ShellRole {
+    /// bro.compositor.isDesktopShell(): the platform knows this process as
+    /// the session's shell.
+    std::function<bool()> is_desktop_shell;
+    /// bro.compositor.setShellOverlay(active): an overlay of the shell
+    /// (launcher, panel, dialog) is up and must sit above the applications'
+    /// windows with the keyboard, or no longer is. Returns whether the host
+    /// did anything.
+    std::function<bool(bool active)> set_overlay;
+    /// With both set, bro.compositor.reserveEdge reserves the edge with the
+    /// platform (the OS work area every application sees: an appbar on
+    /// Windows) instead of only in the window manager's view. The grant
+    /// arrives as reservationChanged (shell: false), and the manager learns
+    /// the smaller work area from the platform's MonitorsChanged. `monitor`
+    /// is a real monitor (the API resolves "the primary" first).
+    std::function<ReservationId(MonitorId monitor, Edge edge, int32_t thickness)> reserve_edge;
+    std::function<bool(ReservationId id)> release_edge;
+};
+void setShellRole(ShellRole role);
+
 } // namespace brocompositor::api
 
 using brocompositor::api::installCompositor;
@@ -85,3 +108,4 @@ using brocompositor::api::setHostFeedsEvents;
 using brocompositor::api::setPointerSource;
 using brocompositor::api::setActivationTokenSource;
 using brocompositor::api::setWindowIconSource;
+using brocompositor::api::setShellRole;

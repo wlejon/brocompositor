@@ -18,6 +18,7 @@ std::shared_ptr<brocompositor::EventQueue> g_default_queue;
 
 CommandSink g_custom_command_sink;
 bool g_host_feeds_events = false;
+ShellRole g_shell_role;
 
 void defaultExecuteCommands(const std::vector<brocompositor::Command>& cmds,
                             brocompositor::WindowManager& wm) {
@@ -104,6 +105,16 @@ void setCommandSink(CommandSink sink) {
 void setHostFeedsEvents(bool on) {
     std::lock_guard lock(g_state_mu);
     g_host_feeds_events = on;
+}
+
+void setShellRole(ShellRole role) {
+    std::lock_guard lock(g_state_mu);
+    g_shell_role = std::move(role);
+}
+
+ShellRole shellRole() {
+    std::lock_guard lock(g_state_mu);
+    return g_shell_role;
 }
 
 bool hostFeedsEvents() {
@@ -295,6 +306,7 @@ void installCompositor() {
     installEventsOnto(compObj.get());
     installPolicyOnto(compObj.get());
     installInteractionOnto(compObj.get());
+    installShellOnto(compObj.get());
 }
 
 void tickCompositorAsync() {
@@ -312,6 +324,8 @@ void shutdownCompositorAsync() {
 void resetCompositorScript() {
     clearCompositorListeners();
     releaseScriptReservations();
+    // The next page starts with no overlay up.
+    if (auto role = shellRole(); role.set_overlay) role.set_overlay(false);
 }
 
 } // namespace brocompositor::api

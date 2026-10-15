@@ -41,6 +41,7 @@ std::vector<Command> WindowManager::handle(const Event& event) {
                    },
                    [&](const MoveSizeEnded& e) { on_move_size_end(e.id); },
                    [&](const ReservationChanged&) {},
+                   [&](const WindowAttention&) {},
                },
                event);
     return take();

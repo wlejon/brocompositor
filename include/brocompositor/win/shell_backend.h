@@ -123,6 +123,33 @@ public:
     // The granted rectangle, once negotiated.
     std::optional<Rect> reservation_rect(ReservationId id) const;
 
+    // ---- the session's desktop shell (a Winlogon shell in place of Explorer)
+    //
+    // Makes `native_window` (an HWND of this process) the session's shell
+    // window: SetShellWindow and SetTaskmanWindow register it with win32k
+    // (GetShellWindow() answers it, and focus with nothing else to go to
+    // lands on it), and it is pinned beneath every application window and
+    // never activated by a click until set_shell_raised(true). It stays
+    // pinned until it is destroyed. Call on the thread that owns the window
+    // (it is subclassed there). Returns false for a window that is not this
+    // process's or one already attached; true otherwise, even when Windows
+    // refused the registration because another shell (Explorer) holds it —
+    // is_desktop_shell() tells. The window is never tracked: windows of this
+    // process are out of scope.
+    //
+    // The backend always listens to the shell hook (RegisterShellHookWindow
+    // on its listener window): windows it reports feed the same tracking as
+    // the WinEvent hooks, and HSHELL_FLASH becomes WindowAttention.
+    bool attach_desktop_shell(uint64_t native_window);
+    // The attached window is the session's shell window (GetShellWindow()).
+    bool is_desktop_shell() const;
+    // The shell has an overlay up (launcher, panel, dialog): true raises the
+    // attached window above the applications' windows and activates it so
+    // it takes the keyboard; false pins it back beneath them and lets any
+    // application take the foreground. Call on the window's thread. False
+    // when no window is attached.
+    bool set_shell_raised(bool raised);
+
     // Puts back every window this backend hid.
     Completion<size_t> restore_all();
 

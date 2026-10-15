@@ -118,6 +118,7 @@ if(WIN32)
         src/win/window_ops.cpp
         src/win/recovery.cpp
         src/win/appbar.cpp
+        src/win/desktop_shell.cpp
         src/win/capture_device.cpp
         src/win/window_capture.cpp
     )
@@ -125,7 +126,7 @@ if(WIN32)
     target_link_libraries(brocompositor_win
         PUBLIC brocompositor_core
         PRIVATE brocompositor_shell_common brodisplays::brodisplays
-                user32 gdi32 shell32 ole32 dwmapi shcore d3d11 dxgi windowsapp)
+                user32 gdi32 shell32 ole32 comctl32 dwmapi shcore d3d11 dxgi windowsapp)
     target_compile_definitions(brocompositor_win PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_include_directories(brocompositor_win PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     if(EXISTS "${CMAKE_BINARY_DIR}/cppwinrt")

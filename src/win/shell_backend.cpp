@@ -65,12 +65,14 @@ void shell_thread(ShellBackend::Impl* d, std::promise<std::string>* ready) {
     ready = nullptr;
 
     d->report_initial_state();
+    d->listen_shell_hook();
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    d->unlisten_shell_hook();
     d->remove_hooks();
     HWND l = d->listener;
     {
@@ -118,7 +120,12 @@ LRESULT CALLBACK listener_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             case WM_SETTINGCHANGE:
                 if (wp == SPI_SETWORKAREA) d->report_monitors_if_changed();
                 break;
-            default: break;
+            default:
+                if (d->shell_hook_message && msg == d->shell_hook_message) {
+                    d->on_shell_hook(wp, lp);
+                    return 0;
+                }
+                break;
         }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);

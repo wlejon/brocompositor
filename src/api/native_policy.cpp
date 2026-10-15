@@ -17,6 +17,17 @@ namespace {
 // Touched only on the JS thread.
 std::vector<ReservationId> g_script_reservations;
 
+// The same, for reservations made with the platform (ShellRole::reserve_edge).
+struct PlatformReservation {
+    ReservationId id = kNoReservation;
+    MonitorId monitor = kNoMonitor;
+};
+std::vector<PlatformReservation> g_platform_reservations;
+
+// Gives a platform reservation back and tells script its band is gone (the
+// platform reports grants, not releases).
+void releasePlatformReservation(const PlatformReservation& p);
+
 const char* edgeName(Edge e) {
     switch (e) {
         case Edge::Left: return "left";
@@ -101,6 +112,18 @@ void emitReservation(const EdgeReservation& r) {
     dispatchListenerEvent("reservationChanged", payload.get());
 }
 
+void releasePlatformReservation(const PlatformReservation& p) {
+    if (auto role = shellRole(); role.release_edge) role.release_edge(p.id);
+    ObjectBuilder obj;
+    obj.set("type", "reservationChanged");
+    obj.set("id", static_cast<double>(p.id));
+    obj.set("monitor", static_cast<double>(p.monitor));
+    ev::Persistent rect(rectToJs(Rect{}));
+    obj.set("rect", rect.get());
+    obj.set("shell", false);
+    dispatchListenerEvent("reservationChanged", obj.build());
+}
+
 // Runs a window-state action and reports whether the window exists and the
 // backend accepted every command it produced.
 Value stateAction(std::span<const Value> args,
@@ -149,6 +172,9 @@ void dispatchShellReservations() {
 }
 
 void releaseScriptReservations() {
+    std::vector<PlatformReservation> platform;
+    platform.swap(g_platform_reservations);
+    for (const auto& p : platform) releasePlatformReservation(p);
     std::vector<ReservationId> ids;
     ids.swap(g_script_reservations);
     auto wm = activeWindowManager();
@@ -187,6 +213,19 @@ void installPolicyOnto(Value compObj) {
         MonitorId mon = reader.has(2) ? reader.getUint(2) : kNoMonitor;
         auto wm = activeWindowManager();
         if (!wm || thickness <= 0) return ev::fromDouble(0.0);
+        // The desktop shell's band is the platform's work area (every
+        // application keeps clear of it), granted by reservationChanged.
+        if (auto role = shellRole(); role.reserve_edge && role.release_edge) {
+            if (mon == kNoMonitor) {
+                for (const auto& m : wm->monitors()) {
+                    if (mon == kNoMonitor || m.primary) mon = m.id;
+                    if (m.primary) break;
+                }
+            }
+            ReservationId id = mon == kNoMonitor ? kNoReservation : role.reserve_edge(mon, edge, thickness);
+            if (id != kNoReservation) g_platform_reservations.push_back({id, mon});
+            return ev::fromDouble(static_cast<double>(id));
+        }
         auto res = wm->reserve_edge(mon, edge, thickness);
         if (res.id != kNoReservation) g_script_reservations.push_back(res.id);
         dispatchCommands(res.commands);
@@ -200,6 +239,14 @@ void installPolicyOnto(Value compObj) {
         auto wm = activeWindowManager();
         if (!wm || !reader.has(0)) return ev::fromBool(false);
         ReservationId id = reader.getUint64(0);
+        if (auto it = std::find_if(g_platform_reservations.begin(), g_platform_reservations.end(),
+                                   [id](const PlatformReservation& p) { return p.id == id; });
+            it != g_platform_reservations.end()) {
+            PlatformReservation p = *it;
+            g_platform_reservations.erase(it);
+            releasePlatformReservation(p);
+            return ev::fromBool(true);
+        }
         auto r = wm->reservation(id);
         if (!r) return ev::fromBool(false);
         std::erase(g_script_reservations, id);

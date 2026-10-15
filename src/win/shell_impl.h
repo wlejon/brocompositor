@@ -140,6 +140,12 @@ struct ShellBackend::Impl : std::enable_shared_from_this<ShellBackend::Impl> {
     RecoveryReport recover_stale();  // op-worker context
     size_t rescue_offscreen();
 
+    // desktop_shell.cpp
+    UINT shell_hook_message = 0;     // RegisterWindowMessage("SHELLHOOK"); 0 when not listening
+    void listen_shell_hook();        // shell thread, once the listener exists
+    void unlisten_shell_hook();      // shell thread, before the listener goes
+    void on_shell_hook(WPARAM code, LPARAM lp);  // shell thread
+
     // appbar.cpp (shell thread)
     void negotiate_new(ReservationId id);
     void remove_appbar_window(HWND hwnd);

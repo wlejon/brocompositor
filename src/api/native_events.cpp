@@ -128,6 +128,12 @@ void drainCompositorEvents() {
                 obj.set("rect", rP.get());
                 obj.set("shell", false);
                 dispatchListenerEvent("reservationChanged", obj.build());
+            } else if constexpr (std::is_same_v<T, WindowAttention>) {
+                ObjectBuilder obj;
+                obj.set("type", "windowAttention");
+                obj.set("id", static_cast<double>(e.id));
+                obj.set("windowId", static_cast<double>(e.id));
+                dispatchListenerEvent("windowAttention", obj.build());
             }
         }, evItem);
     }

@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #define CHECK(cond)                                                            \
     do {                                                                       \
@@ -78,7 +79,7 @@ int main() {
         "removeEventListener", "addListener", "removeListener",
         "minimizeWindow", "maximizeWindow", "fullscreenWindow", "restoreWindow",
         "reserveEdge", "releaseEdge", "getReservations", "getWorkArea",
-        "getInteraction", "setInteraction"
+        "getInteraction", "setInteraction", "isDesktopShell", "setShellOverlay"
     };
     for (const char* m : methods) {
         auto fn = ev::getProperty(comp.get(), m);
@@ -418,6 +419,81 @@ int main() {
         if (ev::toUtf8(r4.value) != "ok") std::cerr << "  got: " << ev::toUtf8(r4.value) << std::endl;
         CHECK(ev::toUtf8(r4.value) == "ok");
         std::cout << "  Window states, reservations and interaction passed." << std::endl;
+    }
+
+    // 7c. The desktop-shell role: an ordinary app answers false; a host that
+    // is the session's shell raises its overlays and reserves edges with the
+    // platform; windowAttention reaches script.
+    std::cout << "Testing the desktop-shell role..." << std::endl;
+    {
+        auto plain = evalScript(
+            "(function() {\n"
+            "  const c = bro.compositor;\n"
+            "  if (c.isDesktopShell() !== false) return 'plain app is a shell';\n"
+            "  if (c.setShellOverlay(true) !== false) return 'plain app raised';\n"
+            "  return 'ok';\n"
+            "})();\n");
+        if (ev::toUtf8(plain.value) != "ok") std::cerr << "  got: " << ev::toUtf8(plain.value) << std::endl;
+        CHECK(ev::toUtf8(plain.value) == "ok");
+
+        static std::vector<bool> overlays;
+        static std::vector<std::string> platform;
+        brocompositor::api::ShellRole role;
+        role.is_desktop_shell = [] { return true; };
+        role.set_overlay = [](bool on) {
+            overlays.push_back(on);
+            return true;
+        };
+        role.reserve_edge = [](MonitorId mon, Edge edge, int32_t thickness) -> ReservationId {
+            platform.push_back("reserve " + std::to_string(mon) + " " + std::to_string(int(edge)) + " " +
+                               std::to_string(thickness));
+            return 7;
+        };
+        role.release_edge = [](ReservationId id) {
+            platform.push_back("release " + std::to_string(id));
+            return true;
+        };
+        brocompositor::api::setShellRole(role);
+        auto r = evalScript(
+            "(function() {\n"
+            "  const c = bro.compositor;\n"
+            "  if (c.isDesktopShell() !== true) return 'isDesktopShell';\n"
+            "  if (c.setShellOverlay(true) !== true || c.setShellOverlay(0) !== true) return 'setShellOverlay';\n"
+            "  if (c.setShellOverlay() !== false) return 'no argument';\n"
+            "  let seen = null;\n"
+            "  const h = c.on('reservationChanged', (e) => { seen = e; });\n"
+            "  const id = c.reserveEdge('bottom', 48);\n"
+            "  if (id !== 7) return 'platform id ' + id;\n"
+            "  if (c.getReservations().length !== 0) return 'reserved in the manager too';\n"
+            "  if (c.getWorkArea().height !== 1040) return 'manager work area changed';\n"
+            "  if (c.releaseEdge(id) !== true) return 'release';\n"
+            "  if (!seen || seen.id !== 7 || seen.shell !== false || seen.rect.height !== 0) return 'release event';\n"
+            "  if (c.releaseEdge(id) !== false) return 'released twice';\n"
+            "  globalThis.__kept = c.reserveEdge('top', 30);\n"
+            "  h.remove();\n"
+            "  globalThis.__att = [];\n"
+            "  c.on('windowAttention', (e) => __att.push(e.id));\n"
+            "  return 'ok';\n"
+            "})();\n");
+        if (ev::toUtf8(r.value) != "ok") std::cerr << "  got: " << ev::toUtf8(r.value) << std::endl;
+        CHECK(ev::toUtf8(r.value) == "ok");
+        CHECK(overlays.size() == 2 && overlays[0] && !overlays[1]);
+        // The primary monitor (id 1) was resolved for "no monitor".
+        CHECK(platform.size() == 3 && platform[0] == "reserve 1 3 48" && platform[1] == "release 7" &&
+              platform[2] == "reserve 1 1 30");
+
+        brocompositor::api::getEventQueue()->push(WindowAttention{1});
+        brocompositor::api::tickCompositorAsync();
+        auto att = evalScript("(function() { return __att.join(','); })();\n");
+        CHECK(ev::toUtf8(att.value) == "1");
+
+        // A page going away gives its platform reservations back and drops
+        // its overlay.
+        brocompositor::api::resetCompositorScript();
+        CHECK(platform.size() == 4 && platform[3] == "release 7");
+        CHECK(overlays.size() == 3 && !overlays[2]);
+        brocompositor::api::setShellRole({});
+        std::cout << "  Desktop-shell role passed." << std::endl;
     }
 
     // 8. Test Event Subscriptions

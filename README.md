@@ -90,6 +90,18 @@ process run in issue order; a later `focus()` supersedes an earlier one
 for the core's commands. On Windows, edge reservations are negotiated with
 Explorer on the shell thread and granted through `ReservationChanged`.
 
+A host that *replaces* Explorer as the session's shell (a Winlogon shell)
+also calls `attach_desktop_shell(hwnd)` on its window's thread: the window
+becomes the shell window (`SetShellWindow`, then `SetTaskmanWindow`), stays
+beneath every application window and is never activated by a click, until
+`set_shell_raised(true)` lifts it over them with the keyboard for an overlay
+(a launcher, a panel). With no Explorer, `reserve_edge` sets the work area
+itself. Every backend listens to the shell hook as well: what it reports
+feeds the same window tracking as the WinEvent hooks, and `HSHELL_FLASH`
+becomes `WindowAttention`. In the JS API this is `isDesktopShell()`,
+`setShellOverlay(active)` and the `windowAttention` event, supplied by the
+host through `api::setShellRole`.
+
 ### Crash recovery
 
 State a shell backend changes outlives it: windows it parked off-screen or

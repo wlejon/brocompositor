@@ -88,8 +88,12 @@ Value modifiersToJs(uint32_t bits) {
     for (auto& [bit, name] : names) n += (bits & bit) ? 1 : 0;
     ev::Persistent arr(ev::makeArray(n));
     uint32_t i = 0;
-    for (auto& [bit, name] : names)
-        if (bits & bit) ev::setElement(arr.get(), i++, ev::fromUtf8(name));
+    for (auto& [bit, name] : names) {
+        if (bits & bit) {
+            ev::Persistent item(ev::fromUtf8(name));
+            ev::setElement(arr.get(), i++, item.get());
+        }
+    }
     return arr.get();
 }
 

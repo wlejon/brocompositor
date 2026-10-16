@@ -87,6 +87,8 @@ if [ "$COVERAGE" = "ON" ]; then
         --exclude-directories 'build/tests' \
         --filter 'brocompositor/src/' --filter 'brocompositor/include/brocompositor/' \
         --exclude-unreachable-branches \
+        --gcov-ignore-errors=no_working_dir_found \
+        --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
         --print-summary \
         --html-details coverage-html/index.html \
         | tee coverage-summary.txt

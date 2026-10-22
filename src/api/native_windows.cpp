@@ -85,20 +85,20 @@ void installWindowsOnto(Value compObj) {
 
         std::vector<Command> cmds;
         cmds.push_back(PlaceWindow{id, r});
-        dispatchCommands(cmds);
+        if (dispatchCommands(cmds) != 0) return ev::fromBool(false);
 
-        WindowSnapshot s = wOpt->snapshot;
-        s.frame = r;
-        wm->handle(WindowChanged{s, change::Geometry});
-
-        ObjectBuilder evObj;
-        evObj.set("type", "windowChanged");
-        evObj.set("id", static_cast<double>(id));
-        evObj.set("windowId", static_cast<double>(id));
-        ev::Persistent winP(windowSnapshotToJs(s, id == wm->focused(), wOpt->workspace,
-                                              wOpt->floating, wOpt->tiled, wOpt->shown));
-        evObj.set("window", winP.get());
-        dispatchListenerEvent("windowChanged", evObj.build());
+        if (!hasCommandSink()) {
+            if (auto updated = wm->window(id)) {
+                ObjectBuilder evObj;
+                evObj.set("type", "windowChanged");
+                evObj.set("id", static_cast<double>(id));
+                evObj.set("windowId", static_cast<double>(id));
+                evObj.set("changes", static_cast<double>(change::Geometry));
+                ev::Persistent winP(windowViewToJs(*updated, id == wm->focused()));
+                evObj.set("window", winP.get());
+                dispatchListenerEvent("windowChanged", evObj.build());
+            }
+        }
 
         return ev::fromBool(true);
     });
@@ -119,11 +119,20 @@ void installWindowsOnto(Value compObj) {
 
         std::vector<Command> cmds;
         cmds.push_back(PlaceWindow{id, r});
-        dispatchCommands(cmds);
+        if (dispatchCommands(cmds) != 0) return ev::fromBool(false);
 
-        WindowSnapshot s = wOpt->snapshot;
-        s.frame = r;
-        wm->handle(WindowChanged{s, change::Geometry});
+        if (!hasCommandSink()) {
+            if (auto updated = wm->window(id)) {
+                ObjectBuilder evObj;
+                evObj.set("type", "windowChanged");
+                evObj.set("id", static_cast<double>(id));
+                evObj.set("windowId", static_cast<double>(id));
+                evObj.set("changes", static_cast<double>(change::Geometry));
+                ev::Persistent winP(windowViewToJs(*updated, id == wm->focused()));
+                evObj.set("window", winP.get());
+                dispatchListenerEvent("windowChanged", evObj.build());
+            }
+        }
 
         return ev::fromBool(true);
     });
@@ -140,16 +149,17 @@ void installWindowsOnto(Value compObj) {
 
         std::vector<Command> cmds;
         cmds.push_back(CloseWindow{id});
-        dispatchCommands(cmds);
+        if (dispatchCommands(cmds) != 0) return ev::fromBool(false);
 
-        wm->handle(WindowRemoved{id});
-
-        ObjectBuilder evObj;
-        evObj.set("type", "windowClosed");
-        evObj.set("id", static_cast<double>(id));
-        evObj.set("windowId", static_cast<double>(id));
-        dispatchListenerEvent("windowClosed", evObj.build());
-        dispatchListenerEvent("windowRemoved", evObj.build());
+        if (!hasCommandSink()) {
+            ObjectBuilder evObj;
+            evObj.set("type", "windowClosed");
+            evObj.set("id", static_cast<double>(id));
+            evObj.set("windowId", static_cast<double>(id));
+            ev::Persistent payload(evObj.build());
+            dispatchListenerEvent("windowClosed", payload.get());
+            dispatchListenerEvent("windowRemoved", payload.get());
+        }
 
         return ev::fromBool(true);
     });

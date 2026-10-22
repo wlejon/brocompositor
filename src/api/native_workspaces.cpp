@@ -46,11 +46,14 @@ void installWorkspacesOnto(Value compObj) {
         auto cmds = wm->activate_workspace(id);
         dispatchCommands(cmds);
 
+        wsOpt = wm->workspace(id);
         ObjectBuilder evObj;
         evObj.set("type", "workspaceChanged");
         evObj.set("workspaceId", static_cast<double>(id));
-        ev::Persistent wsP(workspaceViewToJs(*wsOpt));
-        evObj.set("workspace", wsP.get());
+        if (wsOpt) {
+            ev::Persistent wsP(workspaceViewToJs(*wsOpt));
+            evObj.set("workspace", wsP.get());
+        }
         dispatchListenerEvent("workspaceChanged", evObj.build());
 
         return ev::fromBool(true);
@@ -85,7 +88,9 @@ void installWorkspacesOnto(Value compObj) {
         auto wm = activeWindowManager();
         if (!wm) return ev::fromBool(false);
         WorkspaceId id = static_cast<WorkspaceId>(reader.getUint(0));
+        if (!wm->workspace(id).has_value()) return ev::fromBool(false);
         auto cmds = wm->remove_workspace(id);
+        if (wm->workspace(id).has_value()) return ev::fromBool(false);
         dispatchCommands(cmds);
 
         ObjectBuilder evObj;
@@ -117,6 +122,7 @@ void installWorkspacesOnto(Value compObj) {
         auto wm = activeWindowManager();
         if (!wm) return ev::fromBool(false);
         WorkspaceId id = static_cast<WorkspaceId>(reader.getUint(0));
+        if (!wm->workspace(id).has_value()) return ev::fromBool(false);
         std::string modeStr = reader.getString(1);
 
         LayoutMode mode = LayoutMode::Floating;
@@ -130,6 +136,8 @@ void installWorkspacesOnto(Value compObj) {
             mode = LayoutMode::Grid;
         } else if (modeStr == "floating") {
             mode = LayoutMode::Floating;
+        } else {
+            return ev::fromBool(false);
         }
 
         auto cmds = wm->set_layout(id, mode);

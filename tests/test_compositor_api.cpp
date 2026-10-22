@@ -542,22 +542,113 @@ int main() {
         std::cout << "  Event subscriptions passed." << std::endl;
     }
 
-    // 9. Test closeWindow
-    std::cout << "Testing closeWindow()..." << std::endl;
+    // 9. Test closeWindow, CommandSink deferral/refusal, and workspace validation
+    std::cout << "Testing closeWindow(), CommandSink semantics, and workspace validation..." << std::endl;
     {
+        // With a backend CommandSink that accepts (returns 0), moveWindow/resizeWindow/closeWindow
+        // must NOT echo changes into WindowManager before backend facts arrive.
+        std::vector<Command> sinkCmds;
+        brocompositor::api::setCommandSink([&sinkCmds](const std::vector<Command>& cmds) -> size_t {
+            sinkCmds.insert(sinkCmds.end(), cmds.begin(), cmds.end());
+            return 0;
+        });
+        auto rSinkAccept = evalScript(
+            "(function() {\n"
+            "  const c = bro.compositor;\n"
+            "  const orig = c.getWindow(2).frame;\n"
+            "  if (c.moveWindow(2, { x: 777, y: 888 }) !== true) return 'moveWindow sink accept failed';\n"
+            "  if (c.getWindow(2).frame.x !== orig.x) return 'moveWindow echoed despite sink';\n"
+            "  if (c.resizeWindow(2, 999, 888) !== true) return 'resizeWindow sink accept failed';\n"
+            "  if (c.getWindow(2).frame.width !== orig.width) return 'resizeWindow echoed despite sink';\n"
+            "  if (c.closeWindow(2) !== true) return 'closeWindow sink accept failed';\n"
+            "  if (c.getWindow(2) === null) return 'closeWindow removed window despite sink';\n"
+            "  return 'ok';\n"
+            "})();\n"
+        );
+        CHECK(!rSinkAccept.thrown);
+        CHECK(ev::toUtf8(rSinkAccept.value) == "ok");
+        CHECK(sinkCmds.size() == 3);
+
+        // With a backend CommandSink that refuses (returns > 0), moveWindow/resizeWindow/closeWindow return false.
+        brocompositor::api::setCommandSink([](const std::vector<Command>& cmds) -> size_t {
+            return cmds.size();
+        });
+        auto rSinkRefuse = evalScript(
+            "(function() {\n"
+            "  const c = bro.compositor;\n"
+            "  if (c.moveWindow(2, { x: 1, y: 2 }) !== false) return 'refused moveWindow returned true';\n"
+            "  if (c.resizeWindow(2, 100, 100) !== false) return 'refused resizeWindow returned true';\n"
+            "  if (c.closeWindow(2) !== false) return 'refused closeWindow returned true';\n"
+            "  return 'ok';\n"
+            "})();\n"
+        );
+        brocompositor::api::setCommandSink(nullptr);
+        CHECK(!rSinkRefuse.thrown);
+        CHECK(ev::toUtf8(rSinkRefuse.value) == "ok");
+
+        // Workspace switch active flag, removeWorkspace validation, and setLayoutMode validation
+        auto rWsVal = evalScript(
+            "(function() {\n"
+            "  const c = bro.compositor;\n"
+            "  let lastWsEv = null;\n"
+            "  let wsEvCount = 0;\n"
+            "  let layEvCount = 0;\n"
+            "  const hWs = c.on('workspaceChanged', (e) => { lastWsEv = e; wsEvCount++; });\n"
+            "  const hLay = c.on('layoutChanged', () => { layEvCount++; });\n"
+            "  const wsList = c.getWorkspaces();\n"
+            "  const targetWs = wsList.find(w => !w.active) || wsList[0];\n"
+            "  if (c.switchWorkspace(targetWs.id) !== true) return 'switchWorkspace failed';\n"
+            "  if (!lastWsEv || !lastWsEv.workspace || lastWsEv.workspace.active !== true) {\n"
+            "    return 'switchWorkspace event workspace.active was not true: ' + JSON.stringify(lastWsEv);\n"
+            "  }\n"
+            "  const beforeCount = wsEvCount;\n"
+            "  if (c.removeWorkspace(99999) !== false) return 'removeWorkspace(99999) should fail';\n"
+            "  if (wsEvCount !== beforeCount) return 'removeWorkspace(99999) emitted workspaceChanged';\n"
+            "  for (const w of c.getWorkspaces()) {\n"
+            "    if (c.getWorkspaces().length > 1) c.removeWorkspace(w.id);\n"
+            "  }\n"
+            "  const lastRemaining = c.getWorkspaces()[0].id;\n"
+            "  const beforeLastRemove = wsEvCount;\n"
+            "  if (c.removeWorkspace(lastRemaining) !== false) return 'removeWorkspace on last workspace should fail';\n"
+            "  if (wsEvCount !== beforeLastRemove) return 'failed removeWorkspace emitted event';\n"
+            "  c.setLayoutMode(lastRemaining, 'bsp');\n"
+            "  const beforeBadLay = layEvCount;\n"
+            "  if (c.setLayoutMode(lastRemaining, 'not-a-layout') !== false) return 'invalid layout mode accepted';\n"
+            "  if (layEvCount !== beforeBadLay) return 'invalid layout mode emitted layoutChanged';\n"
+            "  if (c.getLayoutMode(lastRemaining) !== 'bsp') return 'invalid layout mode clobbered bsp: ' + c.getLayoutMode(lastRemaining);\n"
+            "  if (c.setLayoutMode(99999, 'grid') !== false) return 'nonexistent workspace setLayoutMode accepted';\n"
+            "  hWs.remove();\n"
+            "  hLay.remove();\n"
+            "  return 'ok';\n"
+            "})();\n"
+        );
+        CHECK(!rWsVal.thrown);
+        if (ev::toUtf8(rWsVal.value) != "ok") std::cerr << "  got: " << ev::toUtf8(rWsVal.value) << std::endl;
+        CHECK(ev::toUtf8(rWsVal.value) == "ok");
+
+        // Ensure both windows are on the remaining workspace and focus window 2 before closing it:
+        // closing focused window 2 without a CommandSink should execute secondary FocusWindow(1).
         auto r = evalScript(
             "(function() {\n"
+            "  const wsId = bro.compositor.getWorkspaces()[0].id;\n"
+            "  bro.compositor.moveWindowToWorkspace(1, wsId, false);\n"
+            "  bro.compositor.moveWindowToWorkspace(2, wsId, false);\n"
+            "  bro.compositor.focusWindow(1);\n"
+            "  bro.compositor.focusWindow(2);\n"
             "  const before = bro.compositor.getWindow(2);\n"
-            "  if (!before) return 'w2 missing before close';\n"
+            "  if (!before || !before.focused) return 'w2 missing or unfocused before close';\n"
             "  const res = bro.compositor.closeWindow(2);\n"
             "  if (res !== true) return 'closeWindow failed';\n"
             "  const after = bro.compositor.getWindow(2);\n"
             "  if (after !== null) return 'w2 still exists after close';\n"
+            "  const w1 = bro.compositor.getWindow(1);\n"
+            "  if (!w1 || !w1.focused) return 'focus did not transfer to w1 after closing w2';\n"
             "  return 'ok';\n"
             "})();\n"
         );
         CHECK(!r.thrown);
         CHECK(ev::isString(r.value));
+        if (ev::toUtf8(r.value) != "ok") std::cerr << "  got: " << ev::toUtf8(r.value) << std::endl;
         CHECK(ev::toUtf8(r.value) == "ok");
         std::cout << "  closeWindow() passed." << std::endl;
     }

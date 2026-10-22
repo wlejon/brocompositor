@@ -22,18 +22,21 @@ ShellRole g_shell_role;
 
 void defaultExecuteCommands(const std::vector<brocompositor::Command>& cmds,
                             brocompositor::WindowManager& wm) {
-    for (const auto& c : cmds) {
+    std::vector<brocompositor::Command> queue = cmds;
+    for (size_t i = 0; i < queue.size() && i < 64; ++i) {
+        const auto c = queue[i];
+        std::vector<brocompositor::Command> more;
         if (auto* p = std::get_if<brocompositor::PlaceWindow>(&c)) {
             auto v = wm.window(p->id);
             if (v) {
                 brocompositor::WindowSnapshot s = v->snapshot;
                 s.frame = p->frame;
-                wm.handle(brocompositor::WindowChanged{s, brocompositor::change::Geometry});
+                more = wm.handle(brocompositor::WindowChanged{s, brocompositor::change::Geometry});
             }
         } else if (auto* f = std::get_if<brocompositor::FocusWindow>(&c)) {
-            wm.handle(brocompositor::FocusChanged{f->id});
+            more = wm.handle(brocompositor::FocusChanged{f->id});
         } else if (auto* cw = std::get_if<brocompositor::CloseWindow>(&c)) {
-            wm.handle(brocompositor::WindowRemoved{cw->id});
+            more = wm.handle(brocompositor::WindowRemoved{cw->id});
         } else if (auto* st = std::get_if<brocompositor::SetWindowState>(&c)) {
             auto v = wm.window(st->id);
             if (v) {
@@ -44,9 +47,10 @@ void defaultExecuteCommands(const std::vector<brocompositor::Command>& cmds,
                     s.maximized = st->state == WS::Maximized;
                     s.fullscreen = st->state == WS::Fullscreen;
                 }
-                wm.handle(brocompositor::WindowChanged{s, brocompositor::change::State});
+                more = wm.handle(brocompositor::WindowChanged{s, brocompositor::change::State});
             }
         }
+        queue.insert(queue.end(), more.begin(), more.end());
     }
 }
 
@@ -120,6 +124,11 @@ ShellRole shellRole() {
 bool hostFeedsEvents() {
     std::lock_guard lock(g_state_mu);
     return g_host_feeds_events;
+}
+
+bool hasCommandSink() {
+    std::lock_guard lock(g_state_mu);
+    return static_cast<bool>(g_custom_command_sink);
 }
 
 size_t dispatchCommands(const std::vector<brocompositor::Command>& cmds) {

@@ -24,6 +24,7 @@ std::shared_ptr<brocompositor::EventQueue> activeEventQueue();
 // into the window manager as facts (the stand-in when there is no backend).
 // Returns how many the sink refused.
 size_t dispatchCommands(const std::vector<brocompositor::Command>& cmds);
+bool hasCommandSink();
 
 // Error helper
 Value makeError(const std::string& msg);

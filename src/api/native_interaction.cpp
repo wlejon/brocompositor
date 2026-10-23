@@ -41,7 +41,8 @@ Value marginsToJs(const Margins& m) {
 
 Margins marginsFromJs(Value v, Margins m) {
     if (ev::isNumber(v)) {
-        int32_t n = std::max(0, static_cast<int32_t>(ev::toDouble(v)));
+        const double d = ev::toDouble(v);
+        int32_t n = (std::isfinite(d) && d > 0.0) ? static_cast<int32_t>(std::min(d, 2147483647.0)) : 0;
         return Margins{n, n, n, n};
     }
     if (!ev::isObject(v)) return m;
@@ -76,7 +77,10 @@ Value snappingToJs(const SnapConfig& c) {
 
 // "top left", "bottom-right", ["top", "left"], or resize_edge bits.
 uint32_t parseEdges(Value v) {
-    if (ev::isNumber(v)) return static_cast<uint32_t>(ev::toDouble(v));
+    if (ev::isNumber(v)) {
+        const double d = ev::toDouble(v);
+        return (std::isfinite(d) && d >= 0.0) ? static_cast<uint32_t>(std::min(d, 4294967295.0)) : 0;
+    }
     std::string s;
     if (ev::isString(v)) {
         s = ev::toUtf8(v);

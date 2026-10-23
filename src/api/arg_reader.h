@@ -60,7 +60,7 @@ public:
         Value v = pinned_[i].get();
         if (ev::isObject(v)) return def;
         double d = ev::toDouble(v);
-        return std::isnan(d) ? def : d;
+        return !std::isfinite(d) ? def : d;
     }
 
     int32_t getInt(size_t i, int32_t def = 0) const {
@@ -123,7 +123,7 @@ public:
         ev::Persistent p(ev::getProperty(obj, prop));
         if (ev::isNumber(p.get())) {
             double d = ev::toDouble(p.get());
-            return std::isnan(d) ? def : d;
+            return !std::isfinite(d) ? def : d;
         }
         return def;
     }

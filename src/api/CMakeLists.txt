@@ -1,6 +1,5 @@
 add_library(brocompositor_api STATIC
     api.cpp
-    host_class.cpp
     native_windows.cpp
     native_workspaces.cpp
     native_events.cpp

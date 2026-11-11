@@ -383,6 +383,14 @@ void Server::present(MonitorId id, PresentRequest req) {
 
     set_image_state(id, req.image_id, SlotState::Scanout);
     bool ok = wlr_output_commit_state(out->output, &st);
+    if (ok) {
+        // Record the front image before wlr_output_state_finish drops the
+        // state's buffer lock: on backends that do not hold a scanout lock of
+        // their own (headless), finishing the state fires buffer.events.release
+        // immediately, and release_listener must already see front_image set so
+        // it keeps this slot in Scanout until a later frame replaces it.
+        set_front_image(*out, req.image_id);
+    }
     wlr_output_state_finish(&st);
     if (!ok) {
         for (wlr_presentation_feedback* fb : feedback) wlr_presentation_feedback_destroy(fb);
@@ -391,7 +399,6 @@ void Server::present(MonitorId id, PresentRequest req) {
     // The present event names the commit by the sequence it left behind.
     if (!feedback.empty()) out->inflight_feedback[out->output->commit_seq] = std::move(feedback);
     out->inflight[out->output->commit_seq] = req.image_id;
-    set_front_image(*out, req.image_id);
     int64_t t = now_ns();
     for (wlr_surface* ws : drawn) send_frame_done(ws, t);
     if (lock_clean) lock_output_presented(id);

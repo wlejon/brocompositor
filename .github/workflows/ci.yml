@@ -174,7 +174,11 @@ jobs:
             echo 'Linux (Wayland server, portable core, Vulkan importer); the Windows and macOS backends are exercised by the test matrix, not measured.'
             echo
             echo '```'
-            cat coverage-summary.txt
+            if [ -f coverage-summary.txt ]; then
+              cat coverage-summary.txt
+            else
+              echo '(no coverage report produced)'
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
